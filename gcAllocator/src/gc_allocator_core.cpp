@@ -39,7 +39,7 @@ c10::DataPtr GCAllocator::allocate(size_t n) {
     
     // Get current CUDA device
     int device = 0;
-    if (c10::cuda::hasCUDA()) {
+    if (at::hasCUDA()) {
         cudaGetDevice(&device);
     }
     
