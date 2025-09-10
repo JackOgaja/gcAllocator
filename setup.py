@@ -12,13 +12,13 @@ def get_extensions():
     """Build the C++ and CUDA extensions"""
     
     sources = [
-        'gcAllocator/csrc/gc_allocator_core.cpp',
-        'gcAllocator/csrc/allocator_stats.cpp',
-        'gcAllocator/csrc/python_bindings.cpp',
+        'gcAllocator/src/gc_allocator_core.cpp',
+        'gcAllocator/src/allocator_stats.cpp',
+        'gcAllocator/src/python_bindings.cpp',
     ]
     
     include_dirs = [
-        'gcAllocator/csrc',
+        'gcAllocator/src',
     ]
     
     define_macros = []
