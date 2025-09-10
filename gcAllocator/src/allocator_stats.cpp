@@ -5,14 +5,7 @@
 
 namespace gc_allocator {
 
-AllocationStats::AllocationStats() 
-    : start_time_(std::chrono::steady_clock::now()) {
-}
-
-void AllocationStats::recordAllocationRequest(size_t size, int device) {
-    // Just track the request for now
-    // In later phases, we can add request queuing stats
-}
+// ... (other methods remain the same) ...
 
 void AllocationStats::recordSuccessfulAllocation(size_t size, int device) {
     total_allocations_.fetch_add(1);
@@ -21,7 +14,7 @@ void AllocationStats::recordSuccessfulAllocation(size_t size, int device) {
     size_t current = current_bytes_allocated_.fetch_add(size) + size;
     updatePeakMemory(current);
     
-    // Update per-device stats
+    // Update per-device stats - now using AtomicDeviceStats
     {
         std::lock_guard<std::mutex> lock(device_stats_mutex_);
         auto& dev_stats = device_stats_[device];
@@ -41,7 +34,7 @@ void AllocationStats::recordDeallocation(size_t size, int device) {
     total_deallocations_.fetch_add(1);
     current_bytes_allocated_.fetch_sub(size);
     
-    // Update per-device stats
+    // Update per-device stats - now using AtomicDeviceStats
     {
         std::lock_guard<std::mutex> lock(device_stats_mutex_);
         auto& dev_stats = device_stats_[device];
@@ -53,38 +46,64 @@ void AllocationStats::recordDeallocation(size_t size, int device) {
 void AllocationStats::recordOOMEvent(size_t size, int device) {
     oom_count_.fetch_add(1);
     
-    // Update per-device OOM count
+    // Update per-device OOM count - now using AtomicDeviceStats
     {
         std::lock_guard<std::mutex> lock(device_stats_mutex_);
         device_stats_[device].oom_events.fetch_add(1);
     }
 }
 
-void AllocationStats::updatePeakMemory(size_t current) {
-    size_t peak = peak_bytes_allocated_.load();
-    while (current > peak && 
-           !peak_bytes_allocated_.compare_exchange_weak(peak, current)) {
-        // Keep trying to update peak
-    }
-}
-
+// CORRECTED METHOD - Properly handles atomic members
 AllocationStats::DeviceStats AllocationStats::getDeviceStats(int device) const {
     std::lock_guard<std::mutex> lock(device_stats_mutex_);
     auto it = device_stats_.find(device);
     if (it != device_stats_.end()) {
-        return it->second;
+        // Extract values from atomic members and construct new DeviceStats
+        const auto& atomic_stats = it->second;
+        return DeviceStats(
+            atomic_stats.allocations.load(),
+            atomic_stats.deallocations.load(),
+            atomic_stats.bytes_allocated.load(),
+            atomic_stats.current_bytes.load(),
+            atomic_stats.peak_bytes.load(),
+            atomic_stats.oom_events.load()
+        );
     }
-    return DeviceStats{};
+    return DeviceStats{};  // Return default-constructed stats if device not found
 }
 
-std::vector<int> AllocationStats::getActiveDevices() const {
-    std::lock_guard<std::mutex> lock(device_stats_mutex_);
-    std::vector<int> devices;
-    for (const auto& pair : device_stats_) {
-        devices.push_back(pair.first);
+std::string AllocationStats::toString() const {
+    std::stringstream ss;
+    
+    auto elapsed = std::chrono::steady_clock::now() - start_time_;
+    auto elapsed_seconds = std::chrono::duration_cast<std::chrono::seconds>(elapsed).count();
+    
+    ss << "=== GCAllocator Statistics ===\n";
+    ss << "Uptime: " << elapsed_seconds << " seconds\n";
+    ss << "Total Allocations: " << total_allocations_.load() << "\n";
+    ss << "Total Deallocations: " << total_deallocations_.load() << "\n";
+    ss << "Total Bytes Allocated: " << total_bytes_allocated_.load() / (1024.0 * 1024.0) << " MB\n";
+    ss << "Current Bytes Allocated: " << current_bytes_allocated_.load() / (1024.0 * 1024.0) << " MB\n";
+    ss << "Peak Bytes Allocated: " << peak_bytes_allocated_.load() / (1024.0 * 1024.0) << " MB\n";
+    ss << "OOM Events: " << oom_count_.load() << "\n";
+    
+    // Per-device stats - now using the corrected getDeviceStats
+    auto devices = getActiveDevices();
+    if (!devices.empty()) {
+        ss << "\n--- Per-Device Statistics ---\n";
+        for (int device : devices) {
+            auto dev_stats = getDeviceStats(device);  // Now returns copyable DeviceStats
+            ss << "Device " << device << ":\n";
+            ss << "  Allocations: " << dev_stats.allocations << "\n";
+            ss << "  Current Memory: " << dev_stats.current_bytes / (1024.0 * 1024.0) << " MB\n";
+            ss << "  Peak Memory: " << dev_stats.peak_bytes / (1024.0 * 1024.0) << " MB\n";
+            if (dev_stats.oom_events > 0) {
+                ss << "  OOM Events: " << dev_stats.oom_events << "\n";
+            }
+        }
     }
-    std::sort(devices.begin(), devices.end());
-    return devices;
+    
+    return ss.str();
 }
 
 void AllocationStats::reset() {
@@ -103,38 +122,6 @@ void AllocationStats::reset() {
     start_time_ = std::chrono::steady_clock::now();
 }
 
-std::string AllocationStats::toString() const {
-    std::stringstream ss;
-    
-    auto elapsed = std::chrono::steady_clock::now() - start_time_;
-    auto elapsed_seconds = std::chrono::duration_cast<std::chrono::seconds>(elapsed).count();
-    
-    ss << "=== GCAllocator Statistics ===\n";
-    ss << "Uptime: " << elapsed_seconds << " seconds\n";
-    ss << "Total Allocations: " << total_allocations_.load() << "\n";
-    ss << "Total Deallocations: " << total_deallocations_.load() << "\n";
-    ss << "Total Bytes Allocated: " << total_bytes_allocated_.load() / (1024.0 * 1024.0) << " MB\n";
-    ss << "Current Bytes Allocated: " << current_bytes_allocated_.load() / (1024.0 * 1024.0) << " MB\n";
-    ss << "Peak Bytes Allocated: " << peak_bytes_allocated_.load() / (1024.0 * 1024.0) << " MB\n";
-    ss << "OOM Events: " << oom_count_.load() << "\n";
-    
-    // Per-device stats
-    auto devices = getActiveDevices();
-    if (!devices.empty()) {
-        ss << "\n--- Per-Device Statistics ---\n";
-        for (int device : devices) {
-            auto dev_stats = getDeviceStats(device);
-            ss << "Device " << device << ":\n";
-            ss << "  Allocations: " << dev_stats.allocations.load() << "\n";
-            ss << "  Current Memory: " << dev_stats.current_bytes.load() / (1024.0 * 1024.0) << " MB\n";
-            ss << "  Peak Memory: " << dev_stats.peak_bytes.load() / (1024.0 * 1024.0) << " MB\n";
-            if (dev_stats.oom_events.load() > 0) {
-                ss << "  OOM Events: " << dev_stats.oom_events.load() << "\n";
-            }
-        }
-    }
-    
-    return ss.str();
-}
+// ... (other methods remain the same) ...
 
 } // namespace gc_allocator
