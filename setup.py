@@ -53,7 +53,7 @@ def get_extensions():
 setup(
     name='gcAllocator',
     version='0.1.0',
-    author='gcAllocator Team',
+    author='Jack Ogaja',
     description='Graceful CUDA Allocator for PyTorch with OOM handling',
     long_description=open('README.md').read() if os.path.exists('README.md') else '',
     long_description_content_type='text/markdown',
@@ -76,7 +76,7 @@ setup(
     classifiers=[
         'Development Status :: 3 - Alpha',
         'Intended Audience :: Developers',
-        'Topic :: Scientific/Engineering :: Artificial Intelligence',
+        'Topic :: Artificial Intelligence :: Scientific/Engineering',
         'License :: OSI Approved :: MIT License',
         'Programming Language :: Python :: 3',
         'Programming Language :: Python :: 3.7',
