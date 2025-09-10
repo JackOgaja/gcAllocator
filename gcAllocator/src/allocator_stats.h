@@ -5,6 +5,7 @@
 #include <vector>
 #include <chrono>
 #include <unordered_map>
+#include <mutex>
 
 namespace gc_allocator {
 
@@ -26,14 +27,22 @@ public:
     size_t getPeakBytesAllocated() const { return peak_bytes_allocated_.load(); }
     size_t getOOMCount() const { return oom_count_.load(); }
     
-    // Per-device statistics
+    // Per-device statistics - Non-atomic version for external use
     struct DeviceStats {
-        std::atomic<size_t> allocations{0};
-        std::atomic<size_t> deallocations{0};
-        std::atomic<size_t> bytes_allocated{0};
-        std::atomic<size_t> current_bytes{0};
-        std::atomic<size_t> peak_bytes{0};
-        std::atomic<size_t> oom_events{0};
+        size_t allocations;
+        size_t deallocations;
+        size_t bytes_allocated;
+        size_t current_bytes;
+        size_t peak_bytes;
+        size_t oom_events;
+        
+        DeviceStats() : allocations(0), deallocations(0), bytes_allocated(0),
+                       current_bytes(0), peak_bytes(0), oom_events(0) {}
+        
+        DeviceStats(size_t alloc, size_t dealloc, size_t bytes_alloc,
+                   size_t curr_bytes, size_t peak, size_t oom)
+            : allocations(alloc), deallocations(dealloc), bytes_allocated(bytes_alloc),
+              current_bytes(curr_bytes), peak_bytes(peak), oom_events(oom) {}
     };
     
     DeviceStats getDeviceStats(int device) const;
@@ -46,6 +55,16 @@ public:
     std::string toString() const;
     
 private:
+    // Internal atomic version for thread-safe operations
+    struct AtomicDeviceStats {
+        std::atomic<size_t> allocations{0};
+        std::atomic<size_t> deallocations{0};
+        std::atomic<size_t> bytes_allocated{0};
+        std::atomic<size_t> current_bytes{0};
+        std::atomic<size_t> peak_bytes{0};
+        std::atomic<size_t> oom_events{0};
+    };
+    
     // Global statistics
     std::atomic<size_t> total_allocations_{0};
     std::atomic<size_t> total_deallocations_{0};
@@ -54,8 +73,8 @@ private:
     std::atomic<size_t> peak_bytes_allocated_{0};
     std::atomic<size_t> oom_count_{0};
     
-    // Per-device statistics
-    mutable std::unordered_map<int, DeviceStats> device_stats_;
+    // Per-device statistics - using internal atomic version
+    mutable std::unordered_map<int, AtomicDeviceStats> device_stats_;
     mutable std::mutex device_stats_mutex_;
     
     // Timing statistics
