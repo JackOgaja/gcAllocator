@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Basic tests for gcAllocator Phase 1 functionality.
+Basic tests for gcAllocator base functionality.
 Tests allocator installation, basic allocation/deallocation, and statistics.
 """
 
