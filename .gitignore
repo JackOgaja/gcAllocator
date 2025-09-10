@@ -1,0 +1,55 @@
+# Build artifacts
+build/
+dist/
+*.egg-info/
+*.so
+*.pyd
+*.dll
+*.dylib
+
+# Compiled files
+*.o
+*.obj
+*.pyc
+*.pyo
+__pycache__/
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Test artifacts
+.pytest_cache/
+.coverage
+htmlcov/
+*.coverage
+.tox/
+
+# Documentation
+docs/_build/
+
+# Environment
+venv/
+env/
+.env
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# CUDA/PyTorch specific
+*.cuh.cache
+*.ptx
+*.cubin
+*.fatbin
+
+# Debug symbols
+*.pdb
+*.dSYM/
+
+# Profiling
+*.prof
+*.nvprof
