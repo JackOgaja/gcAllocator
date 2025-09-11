@@ -19,7 +19,7 @@ except ImportError as e:
     )
     raise
 
---author__ = "Jack Ogaja"
+__author__ = "Jack Ogaja"
 __version__ = "0.1.0"
 __all__ = ["GCAllocator", "AllocationStats", "install", "uninstall", "get_stats"]
 
