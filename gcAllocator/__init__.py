@@ -43,7 +43,11 @@ except ImportError as e:
 
 __author__ = "Jack Ogaja"
 __version__ = "0.1.0"
-__all__ = ["GCAllocator", "AllocationStats", "install", "uninstall", "get_stats"]
+__all__ = ["GCAllocator", "AllocationStats", "install", "uninstall", "get_stats", "is_installed", "reset_stats"]
+
+# Global state management
+_global_allocator_instance = None
+_is_globally_installed = False
 
 
 class AllocationStats:
@@ -101,57 +105,118 @@ class GCAllocator:
         Args:
             enable_logging: Whether to enable detailed logging of allocations
         """
-        self.enable_logging = enable_logging
+        # Check environment variable for logging
+        env_logging = os.environ.get("GC_ALLOCATOR_LOG", "0")
+        self.enable_logging = enable_logging or env_logging.lower() in ("1", "true", "yes", "on")
         self._installed = False
     
     def install(self):
         """Install the GCAllocator as the default CUDA allocator"""
+        global _global_allocator_instance, _is_globally_installed
+        
         if self._installed:
-            warnings.warn("GCAllocator is already installed")
+            warnings.warn("GCAllocator is already installed for this instance")
             return
+        
+        if _is_globally_installed:
+            # Properly handle reinstallation by uninstalling first
+            if _global_allocator_instance and _global_allocator_instance != self:
+                _global_allocator_instance.uninstall()
         
         if not torch.cuda.is_available():
             raise RuntimeError("CUDA is not available. GCAllocator requires CUDA support.")
-        
-        # Install the allocator
-        gc_allocator_core.install_allocator()
-        
-        # Set logging if enabled
-        if self.enable_logging:
-            gc_allocator_core.set_logging_enabled(True)
-        
-        self._installed = True
-        print(f"GCAllocator v{__version__} installed successfully")
+
+        try:
+            # Install the allocator with logging configuration
+            gc_allocator_core.install_allocator()
+            if self.enable_logging:
+                gc_allocator_core.enable_logging()
+            else:
+                gc_allocator_core.disable_logging()
+            
+            self._installed = True
+            _global_allocator_instance = self
+            _is_globally_installed = True
+            
+            if self.enable_logging:
+                print("GCAllocator v{} installed successfully".format(__version__))
+                
+        except RuntimeError as e:
+            if "already installed" in str(e):
+                # Force reinstallation by first uninstalling
+                try:
+                    gc_allocator_core.uninstall_allocator()
+                    gc_allocator_core.install_allocator()
+                    if self.enable_logging:
+                        gc_allocator_core.enable_logging()
+                    else:
+                        gc_allocator_core.disable_logging()
+                    
+                    self._installed = True
+                    _global_allocator_instance = self
+                    _is_globally_installed = True
+                    
+                    if self.enable_logging:
+                        print("GCAllocator v{} reinstalled successfully".format(__version__))
+                except Exception as reinstall_error:
+                    raise RuntimeError(f"Failed to reinstall allocator: {reinstall_error}")
+            else:
+                raise
     
     def uninstall(self):
-        """Uninstall the GCAllocator and restore the original allocator"""
+        """Uninstall the GCAllocator and restore PyTorch's default allocator"""
+        global _global_allocator_instance, _is_globally_installed
+        
         if not self._installed:
             return
         
-        gc_allocator_core.uninstall_allocator()
-        self._installed = False
-        print("GCAllocator uninstalled")
+        try:
+            gc_allocator_core.uninstall_allocator()
+            self._installed = False
+            
+            if _global_allocator_instance == self:
+                _global_allocator_instance = None
+                _is_globally_installed = False
+                
+            if self.enable_logging:
+                print("GCAllocator uninstalled successfully")
+                
+        except Exception as e:
+            warnings.warn(f"Error during uninstall: {e}")
+            # Force reset global state even if C++ uninstall fails
+            self._installed = False
+            if _global_allocator_instance == self:
+                _global_allocator_instance = None
+                _is_globally_installed = False
+    
+    @property
+    def is_installed(self) -> bool:
+        """Check if this allocator instance is currently installed"""
+        return self._installed
     
     def get_stats(self) -> AllocationStats:
         """Get current allocation statistics"""
         if not self._installed:
-            raise RuntimeError("GCAllocator is not installed")
+            warnings.warn("Getting stats from non-installed allocator")
         
         cpp_stats = gc_allocator_core.get_stats()
         return AllocationStats(cpp_stats)
     
     def reset_stats(self):
         """Reset allocation statistics"""
-        if not self._installed:
-            raise RuntimeError("GCAllocator is not installed")
-        
         gc_allocator_core.reset_stats()
     
-    def set_logging(self, enabled: bool):
-        """Enable or disable logging"""
+    def enable_logging_runtime(self):
+        """Enable logging at runtime"""
+        self.enable_logging = True
         if self._installed:
-            gc_allocator_core.set_logging_enabled(enabled)
-        self.enable_logging = enabled
+            gc_allocator_core.enable_logging()
+    
+    def disable_logging_runtime(self):
+        """Disable logging at runtime"""
+        self.enable_logging = False
+        if self._installed:
+            gc_allocator_core.disable_logging()
     
     def __enter__(self):
         """Context manager entry"""
@@ -161,46 +226,46 @@ class GCAllocator:
     def __exit__(self, exc_type, exc_val, exc_tb):
         """Context manager exit"""
         self.uninstall()
-        return False
     
-    @property
-    def is_installed(self) -> bool:
-        """Check if the allocator is currently installed"""
-        return self._installed and gc_allocator_core.is_installed()
+    def __del__(self):
+        """Destructor - ensure cleanup"""
+        try:
+            if self._installed:
+                self.uninstall()
+        except:
+            pass  # Ignore errors during destruction
 
 
-# Convenience functions
-_default_allocator: Optional[GCAllocator] = None
-
-
-def install(enable_logging: bool = False):
-    """
-    Install the GCAllocator globally.
-    
-    Args:
-        enable_logging: Whether to enable detailed logging
-    """
-    global _default_allocator
-    if _default_allocator is None:
-        _default_allocator = GCAllocator(enable_logging=enable_logging)
-    _default_allocator.install()
+# Global convenience functions
+def install(enable_logging: bool = False) -> GCAllocator:
+    """Install GCAllocator globally and return the instance"""
+    allocator = GCAllocator(enable_logging=enable_logging)
+    allocator.install()
+    return allocator
 
 
 def uninstall():
-    """Uninstall the GCAllocator"""
-    global _default_allocator
-    if _default_allocator is not None:
-        _default_allocator.uninstall()
-
-
-def get_stats() -> Optional[AllocationStats]:
-    """Get allocation statistics from the default allocator"""
-    global _default_allocator
-    if _default_allocator is not None and _default_allocator.is_installed:
-        return _default_allocator.get_stats()
-    return None
+    """Uninstall any currently installed GCAllocator"""
+    global _global_allocator_instance
+    if _global_allocator_instance:
+        _global_allocator_instance.uninstall()
 
 
 def is_installed() -> bool:
-    """Check if GCAllocator is installed"""
-    return gc_allocator_core.is_installed()
+    """Check if any GCAllocator is currently installed globally"""
+    return _is_globally_installed
+
+
+def get_stats() -> Optional[AllocationStats]:
+    """Get stats from the globally installed allocator, if any"""
+    global _global_allocator_instance
+    if _global_allocator_instance and _global_allocator_instance.is_installed:
+        return _global_allocator_instance.get_stats()
+    return None
+
+
+def reset_stats():
+    """Reset stats for the globally installed allocator, if any"""
+    global _global_allocator_instance
+    if _global_allocator_instance and _global_allocator_instance.is_installed:
+        _global_allocator_instance.reset_stats()
