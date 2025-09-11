@@ -99,7 +99,7 @@ c10::DataPtr GCAllocator::allocate(size_t n) {
                 data_ptr.device()
             );
         }
-    } catch (const c10::CUDAOutOfMemoryError& e) {
+    } catch (const c10::OutOfMemoryError& e) {
         // Record OOM event
         {
             std::lock_guard<std::mutex> lock(stats_mutex_);
@@ -149,6 +149,11 @@ void GCAllocator::deleteFunction(void* ptr) {
 
 c10::DeleterFnPtr GCAllocator::raw_deleter() const {
     return &GCAllocator::deleteFunction;
+}
+
+void GCAllocator::copy_data(void* dest, const void* src, std::size_t count) const {
+    // Delegate to the original allocator's copy_data method
+    original_allocator_->copy_data(dest, src, count);
 }
 
 void GCAllocator::recordAllocation(void* ptr, size_t size, int device) {
@@ -209,7 +214,7 @@ void GCAllocatorManager::installAllocator() {
     original_cuda_allocator_ = c10::cuda::CUDACachingAllocator::get();
     
     // Replace the CUDA allocator with ours
-    c10::cuda::CUDACachingAllocator::set(allocator_.get());
+    c10::SetAllocator(c10::DeviceType::CUDA, allocator_.get());
     
     installed_.store(true);
     
@@ -227,7 +232,7 @@ void GCAllocatorManager::uninstallAllocator() {
     
     // Restore original allocator
     if (original_cuda_allocator_) {
-        c10::cuda::CUDACachingAllocator::set(original_cuda_allocator_);
+        c10::SetAllocator(c10::DeviceType::CUDA, original_cuda_allocator_);
     }
     
     if (allocator_ && allocator_->isLoggingEnabled()) {

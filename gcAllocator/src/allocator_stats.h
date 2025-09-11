@@ -37,6 +37,12 @@ class AllocationStats {
 public:
     AllocationStats();
     
+    // Copy constructor to handle atomic members
+    AllocationStats(const AllocationStats& other);
+    
+    // Assignment operator to handle atomic members  
+    AllocationStats& operator=(const AllocationStats& other);
+    
     // Record events
     void recordAllocationRequest(size_t size, int device);
     void recordSuccessfulAllocation(size_t size, int device);
