@@ -26,9 +26,11 @@
 #include "allocator_stats.h"
 #include <c10/cuda/CUDACachingAllocator.h>
 #include <c10/cuda/CUDAException.h>
+#include <c10/core/Allocator.h>
 #include <iostream>
 #include <sstream>
 #include <cstdlib>
+#include <cstring>
 
 namespace gc_allocator {
 
@@ -152,8 +154,13 @@ c10::DeleterFnPtr GCAllocator::raw_deleter() const {
 }
 
 void GCAllocator::copy_data(void* dest, const void* src, std::size_t count) const {
-    // Delegate to the original allocator's copy_data method
-    original_allocator_->copy_data(dest, src, count);
+    // Delegate to the original allocator's copy_data method if available,
+    // otherwise use standard memcpy
+    if (original_allocator_) {
+        original_allocator_->copy_data(dest, src, count);
+    } else {
+        std::memcpy(dest, src, count);
+    }
 }
 
 void GCAllocator::recordAllocation(void* ptr, size_t size, int device) {
