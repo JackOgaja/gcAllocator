@@ -28,17 +28,21 @@
 #include <c10/core/Allocator.h>
 #include <c10/cuda/CUDAStream.h>
 #include <c10/cuda/CUDAGuard.h>
+#include <c10/cuda/CUDACachingAllocator.h>
 #include <ATen/cuda/CUDAContext.h>
+#include <cuda_runtime.h>
 #include <mutex>
 #include <atomic>
 #include <memory>
 #include <unordered_map>
+#include <chrono>
 
 namespace gc_allocator {
 
 // Forward declarations
 class AllocationStats;
 
+// Custom allocator that wraps PyTorch's CUDA allocator
 class GCAllocator : public c10::Allocator {
 public:
     GCAllocator();
@@ -47,7 +51,6 @@ public:
     // Core allocator interface - required by c10::Allocator
     c10::DataPtr allocate(size_t n) override;
     c10::DeleterFnPtr raw_deleter() const override;
-    void copy_data(void* dest, const void* src, std::size_t count) const override;
 
     // Get the original allocator for passthrough
     c10::Allocator* getOriginalAllocator() const { return original_allocator_; }
@@ -60,8 +63,7 @@ public:
     void setLoggingEnabled(bool enabled) { logging_enabled_.store(enabled); }
     bool isLoggingEnabled() const { return logging_enabled_.load(); }
 
-protected:
-    // Internal allocation tracking
+    // Public allocation tracking for wrapper
     void recordAllocation(void* ptr, size_t size, int device);
     void recordDeallocation(void* ptr);
     
@@ -107,9 +109,13 @@ public:
     // Get the current allocator instance
     GCAllocator* getAllocator() { return allocator_.get(); }
     
+    // Enable/disable logging globally
+    void enableLogging();
+    void disableLogging();
+    
 private:
     GCAllocatorManager() = default;
-    ~GCAllocatorManager() = default;
+    ~GCAllocatorManager();
     
     // Prevent copying
     GCAllocatorManager(const GCAllocatorManager&) = delete;
@@ -119,6 +125,10 @@ private:
     c10::Allocator* original_cuda_allocator_{nullptr};
     std::atomic<bool> installed_{false};
     mutable std::mutex install_mutex_;
+    
+    // Track all allocated pointers globally for interception
+    static std::unordered_map<void*, size_t> global_allocations_;
+    static std::mutex global_allocations_mutex_;
 };
 
 } // namespace gc_allocator
