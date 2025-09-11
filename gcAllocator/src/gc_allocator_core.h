@@ -47,6 +47,7 @@ public:
     // Core allocator interface - required by c10::Allocator
     c10::DataPtr allocate(size_t n) override;
     c10::DeleterFnPtr raw_deleter() const override;
+    void copy_data(void* dest, const void* src, std::size_t count) const override;
 
     // Get the original allocator for passthrough
     c10::Allocator* getOriginalAllocator() const { return original_allocator_; }

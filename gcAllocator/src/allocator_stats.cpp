@@ -29,6 +29,64 @@
 
 namespace gc_allocator {
 
+AllocationStats::AllocationStats() : start_time_(std::chrono::steady_clock::now()) {
+}
+
+// Copy constructor to handle atomic members
+AllocationStats::AllocationStats(const AllocationStats& other) 
+    : total_allocations_(other.total_allocations_.load()),
+      total_deallocations_(other.total_deallocations_.load()),
+      total_bytes_allocated_(other.total_bytes_allocated_.load()),
+      current_bytes_allocated_(other.current_bytes_allocated_.load()),
+      peak_bytes_allocated_(other.peak_bytes_allocated_.load()),
+      oom_count_(other.oom_count_.load()),
+      start_time_(other.start_time_) {
+    
+    // Copy device stats
+    std::lock_guard<std::mutex> lock(other.device_stats_mutex_);
+    for (const auto& pair : other.device_stats_) {
+        int device = pair.first;
+        const auto& other_stats = pair.second;
+        auto& my_stats = device_stats_[device];
+        my_stats.allocations.store(other_stats.allocations.load());
+        my_stats.deallocations.store(other_stats.deallocations.load());
+        my_stats.bytes_allocated.store(other_stats.bytes_allocated.load());
+        my_stats.current_bytes.store(other_stats.current_bytes.load());
+        my_stats.peak_bytes.store(other_stats.peak_bytes.load());
+        my_stats.oom_events.store(other_stats.oom_events.load());
+    }
+}
+
+// Assignment operator to handle atomic members
+AllocationStats& AllocationStats::operator=(const AllocationStats& other) {
+    if (this != &other) {
+        total_allocations_.store(other.total_allocations_.load());
+        total_deallocations_.store(other.total_deallocations_.load());
+        total_bytes_allocated_.store(other.total_bytes_allocated_.load());
+        current_bytes_allocated_.store(other.current_bytes_allocated_.load());
+        peak_bytes_allocated_.store(other.peak_bytes_allocated_.load());
+        oom_count_.store(other.oom_count_.load());
+        start_time_ = other.start_time_;
+        
+        // Copy device stats
+        std::lock_guard<std::mutex> lock1(device_stats_mutex_);
+        std::lock_guard<std::mutex> lock2(other.device_stats_mutex_);
+        device_stats_.clear();
+        for (const auto& pair : other.device_stats_) {
+            int device = pair.first;
+            const auto& other_stats = pair.second;
+            auto& my_stats = device_stats_[device];
+            my_stats.allocations.store(other_stats.allocations.load());
+            my_stats.deallocations.store(other_stats.deallocations.load());
+            my_stats.bytes_allocated.store(other_stats.bytes_allocated.load());
+            my_stats.current_bytes.store(other_stats.current_bytes.load());
+            my_stats.peak_bytes.store(other_stats.peak_bytes.load());
+            my_stats.oom_events.store(other_stats.oom_events.load());
+        }
+    }
+    return *this;
+}
+
 // ... (other methods remain the same) ...
 
 void AllocationStats::recordSuccessfulAllocation(size_t size, int device) {
@@ -144,6 +202,27 @@ void AllocationStats::reset() {
     }
     
     start_time_ = std::chrono::steady_clock::now();
+}
+
+void AllocationStats::recordAllocationRequest(size_t size, int device) {
+    // Currently just a placeholder - could track failed allocation attempts
+}
+
+std::vector<int> AllocationStats::getActiveDevices() const {
+    std::lock_guard<std::mutex> lock(device_stats_mutex_);
+    std::vector<int> devices;
+    for (const auto& pair : device_stats_) {
+        devices.push_back(pair.first);
+    }
+    return devices;
+}
+
+void AllocationStats::updatePeakMemory(size_t current) {
+    size_t peak = peak_bytes_allocated_.load();
+    while (current > peak && 
+           !peak_bytes_allocated_.compare_exchange_weak(peak, current)) {
+        // Keep trying to update peak
+    }
 }
 
 // ... (other methods remain the same) ...
