@@ -2,11 +2,11 @@
 
 A custom GPU memory allocator for PyTorch that handles out-of-memory (OOM) conditions gracefully through intelligent retry mechanisms and inter-process coordination.
 
-## Phase 1 - Core Infrastructure (Current)
+## Core Infrastructure
 
 This initial phase establishes the foundation for graceful OOM handling by implementing a custom allocator that intercepts PyTorch's CUDA memory allocation requests.
 
-### Features (Phase 1)
+### Base Features
 
 -  Custom CUDA allocator that integrates with PyTorch
 -  Transparent pass-through to original PyTorch allocator
