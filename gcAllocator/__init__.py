@@ -109,6 +109,10 @@ class GCAllocator:
         env_logging = os.environ.get("GC_ALLOCATOR_LOG", "0")
         self.enable_logging = enable_logging or env_logging.lower() in ("1", "true", "yes", "on")
         self._installed = False
+        
+        # Check what logging functions are available in the C++ extension
+        self._has_enable_logging = hasattr(gc_allocator_core, 'enable_logging')
+        self._has_disable_logging = hasattr(gc_allocator_core, 'disable_logging')
     
     def install(self):
         """Install the GCAllocator as the default CUDA allocator"""
@@ -127,12 +131,11 @@ class GCAllocator:
             raise RuntimeError("CUDA is not available. GCAllocator requires CUDA support.")
 
         try:
-            # Install the allocator with logging configuration
+            # Install the allocator
             gc_allocator_core.install_allocator()
-            if self.enable_logging:
-                gc_allocator_core.enable_logging()
-            else:
-                gc_allocator_core.disable_logging()
+            
+            # Configure logging if available
+            self._configure_logging()
             
             self._installed = True
             _global_allocator_instance = self
@@ -142,15 +145,14 @@ class GCAllocator:
                 print("GCAllocator v{} installed successfully".format(__version__))
                 
         except RuntimeError as e:
-            if "already installed" in str(e):
+            if "already installed" in str(e).lower():
                 # Force reinstallation by first uninstalling
                 try:
                     gc_allocator_core.uninstall_allocator()
                     gc_allocator_core.install_allocator()
-                    if self.enable_logging:
-                        gc_allocator_core.enable_logging()
-                    else:
-                        gc_allocator_core.disable_logging()
+                    
+                    # Configure logging if available
+                    self._configure_logging()
                     
                     self._installed = True
                     _global_allocator_instance = self
@@ -162,6 +164,16 @@ class GCAllocator:
                     raise RuntimeError(f"Failed to reinstall allocator: {reinstall_error}")
             else:
                 raise
+    
+    def _configure_logging(self):
+        """Configure logging if the C++ extension supports it"""
+        try:
+            if self.enable_logging and self._has_enable_logging:
+                gc_allocator_core.enable_logging()
+            elif not self.enable_logging and self._has_disable_logging:
+                gc_allocator_core.disable_logging()
+        except Exception as e:
+            warnings.warn(f"Failed to configure logging: {e}")
     
     def uninstall(self):
         """Uninstall the GCAllocator and restore PyTorch's default allocator"""
@@ -204,19 +216,22 @@ class GCAllocator:
     
     def reset_stats(self):
         """Reset allocation statistics"""
-        gc_allocator_core.reset_stats()
+        if hasattr(gc_allocator_core, 'reset_stats'):
+            gc_allocator_core.reset_stats()
+        else:
+            warnings.warn("reset_stats not available in C++ extension")
     
     def enable_logging_runtime(self):
         """Enable logging at runtime"""
         self.enable_logging = True
         if self._installed:
-            gc_allocator_core.enable_logging()
+            self._configure_logging()
     
     def disable_logging_runtime(self):
         """Disable logging at runtime"""
         self.enable_logging = False
         if self._installed:
-            gc_allocator_core.disable_logging()
+            self._configure_logging()
     
     def __enter__(self):
         """Context manager entry"""
