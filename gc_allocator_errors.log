@@ -1,0 +1,19 @@
+/home/runner/.local/lib/python3.12/site-packages/torch/_subclasses/functional_tensor.py:279: UserWarning: Failed to initialize NumPy: No module named 'numpy' (Triggered internally at /pytorch/torch/csrc/utils/tensor_numpy.cpp:81.)
+  cpu = _conversion_method_template(device=torch.device("cpu"))
+Warning: CUDA is not available. Building CPU-only version.
+Traceback (most recent call last):
+  File "/home/runner/work/gcAllocator/gcAllocator/setup.py", line 83, in <module>
+    ext_modules=get_extensions(),
+                ^^^^^^^^^^^^^^^^
+  File "/home/runner/work/gcAllocator/gcAllocator/setup.py", line 64, in get_extensions
+    ext = CUDAExtension(
+          ^^^^^^^^^^^^^^
+  File "/home/runner/.local/lib/python3.12/site-packages/torch/utils/cpp_extension.py", line 1337, in CUDAExtension
+    library_dirs += library_paths(device_type="cuda")
+                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/runner/.local/lib/python3.12/site-packages/torch/utils/cpp_extension.py", line 1548, in library_paths
+    if (not os.path.exists(_join_cuda_home(lib_dir)) and
+                           ^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/runner/.local/lib/python3.12/site-packages/torch/utils/cpp_extension.py", line 2982, in _join_cuda_home
+    raise OSError('CUDA_HOME environment variable is not set. '
+OSError: CUDA_HOME environment variable is not set. Please set it to your CUDA install root.
