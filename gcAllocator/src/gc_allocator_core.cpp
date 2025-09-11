@@ -26,7 +26,8 @@
 #include "allocator_stats.h"
 #include <c10/cuda/CUDACachingAllocator.h>
 #include <c10/cuda/CUDAException.h>
-#include <c10/core/Allocator.h>
+#include <c10/core/DeviceType.h>
+#include <ATen/Context.h>
 #include <iostream>
 #include <sstream>
 #include <cstdlib>
@@ -34,15 +35,21 @@
 
 namespace gc_allocator {
 
+// Static member definitions
 thread_local GCAllocator* GCAllocator::current_allocator_ = nullptr;
+std::unordered_map<void*, size_t> GCAllocatorManager::global_allocations_;
+std::mutex GCAllocatorManager::global_allocations_mutex_;
 
 GCAllocator::GCAllocator() 
-    : original_allocator_(c10::cuda::CUDACachingAllocator::get()),
+    : original_allocator_(nullptr),
       stats_(std::make_unique<AllocationStats>()) {
+    
+    // Get the original allocator
+    original_allocator_ = c10::cuda::CUDACachingAllocator::get();
     
     // Check for environment variable to enable logging
     const char* log_env = std::getenv("GC_ALLOCATOR_LOG");
-    if (log_env && std::string(log_env) == "1") {
+    if (log_env && (std::string(log_env) == "1" || std::string(log_env) == "true")) {
         logging_enabled_.store(true);
     }
     
@@ -65,7 +72,7 @@ c10::DataPtr GCAllocator::allocate(size_t n) {
     
     // Get current CUDA device
     int device = 0;
-    if (at::hasCUDA()) {
+    if (c10::cuda::is_available()) {
         cudaGetDevice(&device);
     }
     
@@ -83,36 +90,53 @@ c10::DataPtr GCAllocator::allocate(size_t n) {
     // Pass through to original allocator
     c10::DataPtr data_ptr;
     try {
-        data_ptr = original_allocator_->allocate(n);
+        if (original_allocator_) {
+            data_ptr = original_allocator_->allocate(n);
+        } else {
+            // Fallback to direct CUDA allocation
+            void* ptr = nullptr;
+            cudaError_t err = cudaMalloc(&ptr, n);
+            if (err != cudaSuccess) {
+                C10_CUDA_CHECK(err);
+            }
+            data_ptr = c10::DataPtr(ptr, ptr, &deleteFunction, c10::Device(c10::DeviceType::CUDA, device));
+        }
         
         // Record successful allocation
         if (data_ptr.get()) {
-            recordAllocation(data_ptr.get(), n, device);
+            void* raw_ptr = data_ptr.get();
+            recordAllocation(raw_ptr, n, device);
+            
+            // Track globally for interception
+            {
+                std::lock_guard<std::mutex> lock(GCAllocatorManager::global_allocations_mutex_);
+                GCAllocatorManager::global_allocations_[raw_ptr] = n;
+            }
             
             // Wrap with our custom deleter
-            auto* raw_ptr = data_ptr.get();
-            auto ctx = data_ptr.get_context();
-            
-            // Create new DataPtr with our deleter
             return c10::DataPtr(
                 raw_ptr,
-                ctx,
-                &GCAllocator::deleteFunction,
+                data_ptr.get_context(),
+                &deleteFunction,
                 data_ptr.device()
             );
         }
-    } catch (const c10::OutOfMemoryError& e) {
-        // Record OOM event
-        {
-            std::lock_guard<std::mutex> lock(stats_mutex_);
-            stats_->recordOOMEvent(n, device);
+    } catch (const c10::Error& e) {
+        // Check if it's an OOM error
+        if (e.what_without_backtrace().find("out of memory") != std::string::npos ||
+            e.what_without_backtrace().find("CUDA out of memory") != std::string::npos) {
+            // Record OOM event
+            {
+                std::lock_guard<std::mutex> lock(stats_mutex_);
+                stats_->recordOOMEvent(n, device);
+            }
+            
+            if (isLoggingEnabled()) {
+                std::cout << "[GCAllocator] OOM detected: " << e.what() << std::endl;
+            }
+        } else if (isLoggingEnabled()) {
+            std::cout << "[GCAllocator] Allocation failed: " << e.what() << std::endl;
         }
-        
-        if (isLoggingEnabled()) {
-            std::cout << "[GCAllocator] OOM detected: " << e.what() << std::endl;
-        }
-        
-        // For Phase 1, just rethrow - retry logic comes in Phase 2
         throw;
     } catch (const std::exception& e) {
         if (isLoggingEnabled()) {
@@ -141,26 +165,31 @@ void GCAllocator::deleteFunction(void* ptr) {
             std::cout << "[GCAllocator] Deallocation: ptr=" << ptr << std::endl;
         }
         
-        // Use original allocator's deleter
-        auto deleter = allocator->getOriginalAllocator()->raw_deleter();
-        if (deleter) {
-            deleter(ptr);
+        // Remove from global tracking
+        {
+            std::lock_guard<std::mutex> lock(GCAllocatorManager::global_allocations_mutex_);
+            GCAllocatorManager::global_allocations_.erase(ptr);
         }
+        
+        // Use original allocator's deleter if available
+        if (allocator->getOriginalAllocator()) {
+            auto deleter = allocator->getOriginalAllocator()->raw_deleter();
+            if (deleter) {
+                deleter(ptr);
+                return;
+            }
+        }
+        
+        // Fallback to cudaFree
+        cudaFree(ptr);
+    } else {
+        // Direct cudaFree if no allocator
+        cudaFree(ptr);
     }
 }
 
 c10::DeleterFnPtr GCAllocator::raw_deleter() const {
     return &GCAllocator::deleteFunction;
-}
-
-void GCAllocator::copy_data(void* dest, const void* src, std::size_t count) const {
-    // Delegate to the original allocator's copy_data method if available,
-    // otherwise use standard memcpy
-    if (original_allocator_) {
-        original_allocator_->copy_data(dest, src, count);
-    } else {
-        std::memcpy(dest, src, count);
-    }
 }
 
 void GCAllocator::recordAllocation(void* ptr, size_t size, int device) {
@@ -207,11 +236,18 @@ GCAllocatorManager& GCAllocatorManager::getInstance() {
     return instance;
 }
 
+GCAllocatorManager::~GCAllocatorManager() {
+    if (installed_.load()) {
+        uninstallAllocator();
+    }
+}
+
 void GCAllocatorManager::installAllocator() {
     std::lock_guard<std::mutex> lock(install_mutex_);
     
     if (installed_.load()) {
-        throw std::runtime_error("GCAllocator is already installed");
+        // Already installed, just return
+        return;
     }
     
     // Create our allocator instance
@@ -220,8 +256,17 @@ void GCAllocatorManager::installAllocator() {
     // Store the original CUDA allocator
     original_cuda_allocator_ = c10::cuda::CUDACachingAllocator::get();
     
-    // Replace the CUDA allocator with ours
+    // Replace the allocator for CUDA device type
+    // This is the key to intercepting allocations
     c10::SetAllocator(c10::DeviceType::CUDA, allocator_.get());
+    
+    // Also try to set it directly on the caching allocator if the API exists
+    // Note: This might not exist in all PyTorch versions
+    try {
+        c10::cuda::CUDACachingAllocator::set(allocator_.get());
+    } catch (...) {
+        // If this API doesn't exist, that's okay, we've already set it via SetAllocator
+    }
     
     installed_.store(true);
     
@@ -240,15 +285,40 @@ void GCAllocatorManager::uninstallAllocator() {
     // Restore original allocator
     if (original_cuda_allocator_) {
         c10::SetAllocator(c10::DeviceType::CUDA, original_cuda_allocator_);
+        
+        // Also try to restore it directly on the caching allocator
+        try {
+            c10::cuda::CUDACachingAllocator::set(original_cuda_allocator_);
+        } catch (...) {
+            // If this API doesn't exist, that's okay
+        }
     }
     
     if (allocator_ && allocator_->isLoggingEnabled()) {
         std::cout << "[GCAllocator] Uninstalled custom allocator" << std::endl;
     }
     
+    // Clear global allocations tracking
+    {
+        std::lock_guard<std::mutex> alloc_lock(global_allocations_mutex_);
+        global_allocations_.clear();
+    }
+    
     // Clean up our allocator
     allocator_.reset();
     installed_.store(false);
+}
+
+void GCAllocatorManager::enableLogging() {
+    if (allocator_) {
+        allocator_->setLoggingEnabled(true);
+    }
+}
+
+void GCAllocatorManager::disableLogging() {
+    if (allocator_) {
+        allocator_->setLoggingEnabled(false);
+    }
 }
 
 } // namespace gc_allocator
