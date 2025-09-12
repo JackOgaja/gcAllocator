@@ -32,6 +32,7 @@
 #include <sstream>
 #include <cstdlib>
 #include <cstring>
+#include <string>  // Added for std::string
 
 namespace gc_allocator {
 
@@ -121,10 +122,11 @@ c10::DataPtr GCAllocator::allocate(size_t n) {
                 data_ptr.device()
             );
         }
-    } catch (const c10::Error& e) {
-        // Check if it's an OOM error
-        if (e.what_without_backtrace().find("out of memory") != std::string::npos ||
-            e.what_without_backtrace().find("CUDA out of memory") != std::string::npos) {
+        } catch (const c10::Error& e) {
+        // FIX: Convert const char* to std::string for find operation
+        std::string error_msg = e.what_without_backtrace();
+        if (error_msg.find("out of memory") != std::string::npos ||
+            error_msg.find("CUDA out of memory") != std::string::npos) {
             // Record OOM event
             {
                 std::lock_guard<std::mutex> lock(stats_mutex_);
@@ -147,6 +149,7 @@ c10::DataPtr GCAllocator::allocate(size_t n) {
     
     return data_ptr;
 }
+
 
 void GCAllocator::deleteFunction(void* ptr) {
     if (!ptr) return;
@@ -190,6 +193,16 @@ void GCAllocator::deleteFunction(void* ptr) {
 
 c10::DeleterFnPtr GCAllocator::raw_deleter() const {
     return &GCAllocator::deleteFunction;
+}
+// FIX: Add the missing copy_data implementation
+void GCAllocator::copy_data(void* dest, const void* src, std::size_t count) const {
+    // Delegate to the original allocator's copy_data if available
+    if (original_allocator_) {
+        original_allocator_->copy_data(dest, src, count);
+    } else {
+        // Fallback to standard memcpy
+        std::memcpy(dest, src, count);
+    }
 }
 
 void GCAllocator::recordAllocation(void* ptr, size_t size, int device) {
@@ -260,13 +273,8 @@ void GCAllocatorManager::installAllocator() {
     // This is the key to intercepting allocations
     c10::SetAllocator(c10::DeviceType::CUDA, allocator_.get());
     
-    // Also try to set it directly on the caching allocator if the API exists
-    // Note: This might not exist in all PyTorch versions
-    try {
-        c10::cuda::CUDACachingAllocator::set(allocator_.get());
-    } catch (...) {
-        // If this API doesn't exist, that's okay, we've already set it via SetAllocator
-    }
+    // FIX: Remove the CUDACachingAllocator::set call as it doesn't exist in PyTorch 2.8
+    // The c10::SetAllocator call above is sufficient
     
     installed_.store(true);
     
@@ -285,13 +293,7 @@ void GCAllocatorManager::uninstallAllocator() {
     // Restore original allocator
     if (original_cuda_allocator_) {
         c10::SetAllocator(c10::DeviceType::CUDA, original_cuda_allocator_);
-        
-        // Also try to restore it directly on the caching allocator
-        try {
-            c10::cuda::CUDACachingAllocator::set(original_cuda_allocator_);
-        } catch (...) {
-            // If this API doesn't exist, that's okay
-        }
+        // FIX: Remove the CUDACachingAllocator::set call as it doesn't exist
     }
     
     if (allocator_ && allocator_->isLoggingEnabled()) {
