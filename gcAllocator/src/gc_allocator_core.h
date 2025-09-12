@@ -41,6 +41,7 @@ namespace gc_allocator {
 
 // Forward declarations
 class AllocationStats;
+class GCAllocatorManager;
 
 // Custom allocator that wraps PyTorch's CUDA allocator
 class GCAllocator : public c10::Allocator {
@@ -51,6 +52,7 @@ public:
     // Core allocator interface - required by c10::Allocator
     c10::DataPtr allocate(size_t n) override;
     c10::DeleterFnPtr raw_deleter() const override;
+    void copy_data(void* dest, const void* src, std::size_t count) const override;
 
     // Get the original allocator for passthrough
     c10::Allocator* getOriginalAllocator() const { return original_allocator_; }
@@ -92,6 +94,9 @@ private:
     
     // Thread-local storage for current allocator instance
     static thread_local GCAllocator* current_allocator_;
+    
+    // Friend class to access global tracking
+    friend class GCAllocatorManager;
 };
 
 // Global allocator instance management
@@ -113,6 +118,10 @@ public:
     void enableLogging();
     void disableLogging();
     
+    // Track all allocated pointers globally for interception
+    static std::unordered_map<void*, size_t> global_allocations_;
+    static std::mutex global_allocations_mutex_;
+    
 private:
     GCAllocatorManager() = default;
     ~GCAllocatorManager();
@@ -125,10 +134,6 @@ private:
     c10::Allocator* original_cuda_allocator_{nullptr};
     std::atomic<bool> installed_{false};
     mutable std::mutex install_mutex_;
-    
-    // Track all allocated pointers globally for interception
-    static std::unordered_map<void*, size_t> global_allocations_;
-    static std::mutex global_allocations_mutex_;
 };
 
 } // namespace gc_allocator
