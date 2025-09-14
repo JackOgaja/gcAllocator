@@ -68,7 +68,9 @@ public:
     // Public allocation tracking for wrapper
     void recordAllocation(void* ptr, size_t size, int device);
     void recordDeallocation(void* ptr);
-    
+    void recordAllocationRequest(size_t size, int device);
+    void recordOOMEvent(size_t size, int device);
+
 private:
     // Original allocator that we're wrapping
     c10::Allocator* original_allocator_;
