@@ -163,14 +163,16 @@ gcAllocator/
 └── .gitignore                       # Git ignore rules
 ```
 
-## Current Features:
+### Current Features:
 - Retry mechanism with exponential backoff
 - Checkpointing with simple features
 - Retry statistical profile implemented
+
+### Not thoroughly tested
+- OOM errors graceful handling to be fully tested
   
 ### Current Limitations:
 
-- OOM errors still cause immediate failure (no graceful handling)
 - No inter-process coordination 
 - Synchronous allocation only (async support to be added)
 
