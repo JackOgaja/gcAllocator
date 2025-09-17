@@ -36,6 +36,8 @@
 #include <memory>
 #include <unordered_map>
 #include <chrono>
+#include <functional>
+#include "retry_strategy.h"
 
 namespace gc_allocator {
 
@@ -65,6 +67,12 @@ public:
     void setLoggingEnabled(bool enabled) { logging_enabled_.store(enabled); }
     bool isLoggingEnabled() const { return logging_enabled_.load(); }
 
+    // Retry strategy configuration
+    void configureRetryStrategy(const RetryConfig& config);
+    void registerCheckpointCallback(std::function<bool()> callback);
+    const RetryStats& getRetryStats() const;  // Changed to return const reference
+    void resetRetryStats();
+
     // Public allocation tracking for wrapper
     void recordAllocation(void* ptr, size_t size, int device);
     void recordDeallocation(void* ptr);
@@ -78,6 +86,9 @@ private:
     // Thread-safe statistics tracking
     mutable std::mutex stats_mutex_;
     std::unique_ptr<AllocationStats> stats_;
+    
+    // Retry strategy
+    std::unique_ptr<RetryStrategy> retry_strategy_;
     
     // Configuration
     std::atomic<bool> logging_enabled_{false};
@@ -120,22 +131,34 @@ public:
     void enableLogging();
     void disableLogging();
     
-    // Track all allocated pointers globally for interception
-    static std::unordered_map<void*, size_t> global_allocations_;
-    static std::mutex global_allocations_mutex_;
+    // Retry strategy configuration
+    void configureRetryStrategy(const RetryConfig& config);
+    void registerCheckpointCallback(std::function<bool()> callback);
+    const RetryStats& getRetryStats() const;
+    void resetRetryStats();
     
+    ~GCAllocatorManager();
+
 private:
     GCAllocatorManager() = default;
-    ~GCAllocatorManager();
     
-    // Prevent copying
+    // Prevent copying - keep these in private
     GCAllocatorManager(const GCAllocatorManager&) = delete;
     GCAllocatorManager& operator=(const GCAllocatorManager&) = delete;
     
+    //std::unique_ptr<GCAllocator> allocator_;
+    //c10::Allocator* original_cuda_allocator_{nullptr};
+    //std::atomic<bool> installed_{false};
+    //std::mutex install_mutex_;
     std::unique_ptr<GCAllocator> allocator_;
-    c10::Allocator* original_cuda_allocator_{nullptr};
+    c10::Allocator* original_cuda_allocator_ = nullptr;  // Store original allocator
     std::atomic<bool> installed_{false};
     mutable std::mutex install_mutex_;
+
+    static std::unordered_map<void*, size_t> global_allocations_;
+    static std::mutex global_allocations_mutex_;
+
+    friend class GCAllocator;
 };
 
 } // namespace gc_allocator
