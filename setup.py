@@ -36,6 +36,7 @@ def get_extensions():
     sources = [
         'gcAllocator/src/gc_allocator_core.cpp',
         'gcAllocator/src/allocator_stats.cpp',
+        'gcAllocator/src/retry_strategy.cpp',  
         'gcAllocator/src/python_bindings.cpp',
     ]
     
@@ -80,6 +81,7 @@ setup(
     long_description=open('README.md').read() if os.path.exists('README.md') else '',
     long_description_content_type='text/markdown',
     packages=find_packages(),
+    package_dir={"": "."},
     ext_modules=get_extensions(),
     cmdclass={'build_ext': BuildExtension},
     install_requires=[
@@ -94,6 +96,8 @@ setup(
             'flake8',
         ],
     },
+    package_data={"gcallocator": ["*.py"]},
+    include_package_data=True,
     python_requires='>=3.7',
     classifiers=[
         'Development Status :: 3 - Alpha',
