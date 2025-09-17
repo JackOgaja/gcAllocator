@@ -43,12 +43,64 @@ except ImportError as e:
 
 __author__ = "Jack Ogaja"
 __version__ = "0.1.0"
-__all__ = ["GCAllocator", "AllocationStats", "install", "uninstall", "get_stats", "is_installed", "reset_stats"]
+__all__ = ["GCAllocator", "AllocationStats", "RetryConfig", "install", "uninstall", 
+           "get_stats", "is_installed", "reset_stats", "register_checkpoint", "get_manager"]
 
 # Global state management
 _global_allocator_instance = None
 _is_globally_installed = False
 
+
+class RetryConfig:
+    """Configuration for retry behavior"""
+    
+    def __init__(self, 
+                 max_attempts: int = 3,
+                 initial_backoff_ms: int = 100,
+                 backoff_multiplier: float = 2.0,
+                 max_backoff_ms: int = 5000,
+                 flush_cache_on_retry: bool = True,
+                 enable_checkpointing: bool = False,
+                 checkpoint_threshold: int = 2):
+        """
+        Initialize retry configuration.
+        
+        Args:
+            max_attempts: Maximum number of retry attempts
+            initial_backoff_ms: Initial backoff delay in milliseconds
+            backoff_multiplier: Multiplier for exponential backoff
+            max_backoff_ms: Maximum backoff delay in milliseconds
+            flush_cache_on_retry: Whether to flush PyTorch cache on retry
+            enable_checkpointing: Whether to trigger checkpoints on repeated failures
+            checkpoint_threshold: Number of failures before triggering checkpoint
+        """
+        self.max_attempts = max_attempts
+        self.initial_backoff_ms = initial_backoff_ms
+        self.backoff_multiplier = backoff_multiplier
+        self.max_backoff_ms = max_backoff_ms
+        self.flush_cache_on_retry = flush_cache_on_retry
+        self.enable_checkpointing = enable_checkpointing
+        self.checkpoint_threshold = checkpoint_threshold
+
+# Global checkpoint callbacks
+_checkpoint_callbacks = []
+
+def register_checkpoint(callback):
+    """
+    Register a checkpoint callback for OOM recovery.
+    
+    The callback should return True if checkpointing succeeded.
+    
+    Args:
+        callback: Function that performs checkpointing
+    """
+    global _checkpoint_callbacks
+    _checkpoint_callbacks.append(callback)
+    
+    # Register with C++ if allocator is installed
+    if _global_allocator_instance and _global_allocator_instance.is_installed:
+        # This would need to be implemented in the C++ bindings
+        pass
 
 class AllocationStats:
     """Wrapper for allocation statistics from C++"""
@@ -94,17 +146,18 @@ class AllocationStats:
     def __repr__(self) -> str:
         return f"<AllocationStats allocations={self.total_allocations} current_mb={self.current_bytes_allocated/(1024**2):.2f}>"
 
-
 class GCAllocator:
-    """Main interface for the graceful CUDA allocator"""
+    """Main interface for the graceful CUDA allocator with retry support"""
     
-    def __init__(self, enable_logging: bool = False):
+    def __init__(self, enable_logging: bool = False, retry_config: RetryConfig = None):
         """
         Initialize the GCAllocator.
         
         Args:
             enable_logging: Whether to enable detailed logging of allocations
+            retry_config: Configuration for retry behavior
         """
+        
         # Check environment variable for logging
         env_logging = os.environ.get("GC_ALLOCATOR_LOG", "0")
         self.enable_logging = enable_logging or env_logging.lower() in ("1", "true", "yes", "on")
@@ -113,7 +166,9 @@ class GCAllocator:
         # Check what logging functions are available in the C++ extension
         self._has_enable_logging = hasattr(gc_allocator_core, 'enable_logging')
         self._has_disable_logging = hasattr(gc_allocator_core, 'disable_logging')
-    
+   
+        self.retry_config = retry_config or RetryConfig()
+ 
     def install(self):
         """Install the GCAllocator as the default CUDA allocator"""
         global _global_allocator_instance, _is_globally_installed
@@ -284,3 +339,8 @@ def reset_stats():
     global _global_allocator_instance
     if _global_allocator_instance and _global_allocator_instance.is_installed:
         _global_allocator_instance.reset_stats()
+
+def get_manager():
+    """Get the C++ allocator manager instance"""
+    return gc_allocator_core.get_manager()
+
