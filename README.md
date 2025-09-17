@@ -147,46 +147,46 @@ python tests/test_basic_allocation.py
 gcAllocator/
 ├── gcAllocator/
 │   ├── __init__.py           # Python interface
-│   └── csrc/
+│   └── src/
 │       ├── gc_allocator_core.h     # Main allocator header
 │       ├── gc_allocator_core.cpp   # Main allocator implementation
 │       ├── allocator_stats.h       # Statistics tracking
 │       ├── allocator_stats.cpp     # Statistics implementation
+|       |-- retry_strategy.h
+|       |-- retry_strategy.cpp
 │       └── python_bindings.cpp     # Python bindings
 ├── tests/
-│   ├── test_basic_allocation.py    # Basic functionality tests
-│   └── cpp/
-│       └── test_allocator_core.cpp # C++ unit tests
+│   |__test_basic_allocation.py    # Basic functionality tests
 ├── setup.py                         # Build configuration
 ├── README.md                        # This file
 └── .gitignore                      # Git ignore rules
 ```
 
-### Current Limitations (Phase 1)
+## Current Features:
+- Retry mechanism with exponential backoff
+- Checkpointing with simple features
+- Retry statistical profile implemented
+  
+### Current Limitations:
 
-- No retry mechanism yet (coming in Phase 2)
-- OOM errors still cause immediate failure (Phase 2 will add graceful handling)
-- No inter-process coordination (Phase 5)
-- Synchronous allocation only (Phase 4 will add async support)
+- OOM errors still cause immediate failure (graceful handling)
+- No inter-process coordination 
+- Synchronous allocation only (async support to be added)
 
-### Upcoming Phases
+### Upcoming Features:
 
-- **Phase 2**: Retry mechanism with exponential backoff
-- **Phase 3**: Enhanced Python bindings and configuration
-- **Phase 4**: Asynchronous allocation support
-- **Phase 5**: Inter-process memory pressure protocol
-- **Phase 6**: Checkpointing and advanced features
-- **Phase 7**: Production hardening
+- Enhanced Python bindings and configuration
+- Asynchronous allocation support
+- Inter-process memory pressure protocol
+- Checkpointing and advanced features
+- Production hardening
 
 ### Performance
 
-Phase 1 introduces minimal overhead (<1%) during normal operation since it primarily passes through to the original allocator while collecting statistics.
+Current state introduces minimal overhead (<1%) during normal operation since it primarily passes through to the original allocator while collecting statistics.
 
 ### License
 
 MIT License - See LICENSE file for details
 
-### Contributing
-
-Contributions are welcome! Please see CONTRIBUTING.md for guidelines.
 ```
