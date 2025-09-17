@@ -225,6 +225,4 @@ void AllocationStats::updatePeakMemory(size_t current) {
     }
 }
 
-// ... (other methods remain the same) ...
-
 } // namespace gc_allocator
