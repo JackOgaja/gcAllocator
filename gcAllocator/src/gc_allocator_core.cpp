@@ -380,7 +380,6 @@ void GCAllocatorManager::installAllocator() {
     }
 }
 
-// JO:
 //void GCAllocatorManager::uninstallAllocator() {
 //    std::lock_guard<std::mutex> lock(install_mutex_);
 //    
