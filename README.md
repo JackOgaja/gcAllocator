@@ -169,7 +169,7 @@ gcAllocator/
   
 ### Current Limitations:
 
-- OOM errors still cause immediate failure (graceful handling)
+- OOM errors still cause immediate failure (no graceful handling)
 - No inter-process coordination 
 - Synchronous allocation only (async support to be added)
 
