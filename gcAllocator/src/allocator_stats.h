@@ -84,6 +84,15 @@ public:
     // Export stats as string for logging
     std::string toString() const;
     
+    // Global statistics
+    // JO;
+    std::atomic<size_t> total_allocations_{0};
+    std::atomic<size_t> total_deallocations_{0};
+    std::atomic<size_t> total_bytes_allocated_{0};
+    std::atomic<size_t> current_bytes_allocated_{0};
+    std::atomic<size_t> peak_bytes_allocated_{0};
+    std::atomic<size_t> oom_count_{0};
+    
 private:
     // Internal atomic version for thread-safe operations
     struct AtomicDeviceStats {
@@ -94,15 +103,7 @@ private:
         std::atomic<size_t> peak_bytes{0};
         std::atomic<size_t> oom_events{0};
     };
-    
-    // Global statistics
-    std::atomic<size_t> total_allocations_{0};
-    std::atomic<size_t> total_deallocations_{0};
-    std::atomic<size_t> total_bytes_allocated_{0};
-    std::atomic<size_t> current_bytes_allocated_{0};
-    std::atomic<size_t> peak_bytes_allocated_{0};
-    std::atomic<size_t> oom_count_{0};
-    
+
     // Per-device statistics - using internal atomic version
     mutable std::unordered_map<int, AtomicDeviceStats> device_stats_;
     mutable std::mutex device_stats_mutex_;
