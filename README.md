@@ -156,10 +156,11 @@ gcAllocator/
 |       |-- retry_strategy.cpp
 │       └── python_bindings.cpp     # Python bindings
 ├── tests/
-│   |__test_basic_allocation.py    # Basic functionality tests
+│   |-- test_basic_allocation.py    # Basic functionality tests
+|   |__ advanced_pytorch_example.py  
 ├── setup.py                         # Build configuration
 ├── README.md                        # This file
-└── .gitignore                      # Git ignore rules
+└── .gitignore                       # Git ignore rules
 ```
 
 ## Current Features:
