@@ -68,7 +68,7 @@ import gcAllocator
 import torch
 
 def test_allocation_tracking():
-    """Test manual allocation tracking"""
+    """Test allocation tracking"""
     print("=== Testing Manual Allocation Tracking ===")
 
     # Install allocator
