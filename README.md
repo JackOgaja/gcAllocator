@@ -62,21 +62,51 @@ DEBUG_BUILD=1 pip install -e .
 #### Basic Usage
 
 ```python
-import torch
+#!/usr/bin/env python3
+
 import gcAllocator
+import torch
 
-# Install the allocator globally
-gcAllocator.install(enable_logging=True)
+def test_allocation_tracking():
+    """Test manual allocation tracking"""
+    print("=== Testing Manual Allocation Tracking ===")
 
-# Now all PyTorch CUDA allocations go through gcAllocator
-tensor = torch.randn(1000, 1000, device='cuda')
+    # Install allocator
+    allocator = gcAllocator.install(enable_logging=True)
 
-# Get allocation statistics
-stats = gcAllocator.get_stats()
-print(stats)
+    # Create a tensor and manually track it
+    tensor = torch.randn(100000, 100000, device='cuda')
 
-# Uninstall when done
-gcAllocator.uninstall()
+    # Get tensor info
+    ptr = tensor.data_ptr()
+    size = tensor.numel() * tensor.element_size()
+    device = tensor.device.index or 0
+
+    print(f"Created tensor: ptr={hex(ptr)}, size={size}, device={device}")
+
+    # Manually track the allocation
+    gcAllocator.gc_allocator_core.track_allocation(ptr, size, device)
+
+    # Check stats
+    stats = gcAllocator.get_stats()
+    print(f"After manual tracking: {stats}")
+
+    # Delete tensor and track deallocation
+    del tensor
+    torch.cuda.empty_cache()
+
+    # Manually track deallocation
+    gcAllocator.gc_allocator_core.track_deallocation(ptr)
+
+    # Check final stats
+    stats = gcAllocator.get_stats()
+    print(f"After deallocation: {stats}")
+
+    # Uninstall
+    gcAllocator.uninstall()
+
+if __name__ == "__main__":
+    test_allocation_tracking()
 ```
 
 #### Context Manager
