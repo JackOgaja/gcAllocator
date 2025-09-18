@@ -16,7 +16,7 @@ This initial phase establishes the foundation for graceful OOM handling by imple
 -  Optional detailed logging of allocation events
 -  Python and C++ interfaces
 
-### Architecture
+### Data Flow
 
 ```mermaid
 graph TD
