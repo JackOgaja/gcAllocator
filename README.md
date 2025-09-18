@@ -33,6 +33,10 @@ graph TD
     K --> L[Update Statistics]
     L --> M[Original Deallocator]
 ```
+### Architecture:
+
+<img width="1922" height="855" alt="diagram-export-18-09-2025-22_05_04" src="https://github.com/user-attachments/assets/b78e3b5e-37d8-473f-be2f-f16d85ea9900" />
+
 
 ### Installation
 
