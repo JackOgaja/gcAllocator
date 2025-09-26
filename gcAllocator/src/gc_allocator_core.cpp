@@ -78,7 +78,7 @@ c10::DataPtr GCAllocator::allocate(size_t n) {
                   << " bytes (" << (n / (1024.0 * 1024.0)) << " MB)" << std::endl;
     }
     
-    // Update statistics - Use correct member names with underscores
+    // Update statistics: Use correct member names with underscores
     stats_->total_allocations_.fetch_add(1);
     stats_->total_bytes_allocated_.fetch_add(n);
     stats_->current_bytes_allocated_.fetch_add(n);
@@ -115,8 +115,7 @@ c10::DataPtr GCAllocator::allocate(size_t n) {
                 std::cout << "[GCAllocator] CUDA OOM detected in underlying allocator: " 
                           << e.what() << std::endl;
             }
-             
-            // Use correct member name with underscore
+            // 
             stats_->oom_count_.fetch_add(1);
             // Also record OOM event with device info
             stats_->recordOOMEvent(n, device);
@@ -133,7 +132,7 @@ c10::DataPtr GCAllocator::allocate(size_t n) {
                     std::cout << "[GCAllocator] Converting CUDA error to OOM: " 
                               << error_msg << std::endl;
                 }
-                // FIX: Use correct member name with underscore
+                // 
                 stats_->oom_count_.fetch_add(1);
                 stats_->recordOOMEvent(n, device);
                 
@@ -155,7 +154,7 @@ c10::DataPtr GCAllocator::allocate(size_t n) {
             std::cout << "[GCAllocator] Starting allocation with retry strategy..." << std::endl;
         }
         
-        // FIX: Use -> for unique_ptr and correct method name
+        // Use -> for unique_ptr and correct method name
         c10::DataPtr result = retry_strategy_->executeWithRetry(allocator_func, n, device);
         
         if (result.get() && isLoggingEnabled()) {
@@ -179,36 +178,38 @@ c10::DataPtr GCAllocator::allocate(size_t n) {
     }
 }
 
+// JO+ Updated--
 void GCAllocator::deleteFunction(void* ptr) {
     if (!ptr) return;
     
     auto* allocator = current_allocator_;
-    if (allocator) {
-        if (allocator->isLoggingEnabled()) {
-            std::cout << "[GCAllocator] Deallocation: ptr=" << ptr << std::endl;
-        }
-        
-        {
-            std::lock_guard<std::mutex> lock(GCAllocatorManager::global_allocations_mutex_);
-            GCAllocatorManager::global_allocations_.erase(ptr);
-        }
-        
-        // Record deallocation in our stats
-        allocator->recordDeallocation(ptr);
+    if (allocator && allocator->isLoggingEnabled()) {
+        std::cout << "[GCAllocator::delete] Deallocating: " << ptr << std::endl;
     }
     
-    // Use the original allocator's raw deleter to properly free memory
-    // This ensures we use PyTorch's optimized deallocation
+    // Record deallocation in stats if tracked
+    {
+        std::lock_guard<std::mutex> lock(GCAllocatorManager::global_allocations_mutex_);
+        auto it = GCAllocatorManager::global_allocations_.find(ptr);
+        if (it != GCAllocatorManager::global_allocations_.end()) {
+            if (allocator) {
+                allocator->recordDeallocation(ptr);
+            }
+            GCAllocatorManager::global_allocations_.erase(it);
+        }
+    }
+    
+    // CRITICAL: Use the original allocator's deleter
     auto* manager = &GCAllocatorManager::getInstance();
-    if (manager->isInstalled() && allocator && allocator->getOriginalAllocator()) {
-        auto deleter = allocator->getOriginalAllocator()->raw_deleter();
+    if (manager->isInstalled() && manager->original_cuda_allocator_) {
+        auto deleter = manager->original_cuda_allocator_->raw_deleter();
         if (deleter) {
             deleter(ptr);
             return;
         }
     }
     
-    // Fallback to default CUDA caching allocator deleter
+    // Fallback to default CUDA deleter
     auto default_deleter = c10::cuda::CUDACachingAllocator::get()->raw_deleter();
     if (default_deleter) {
         default_deleter(ptr);
@@ -266,10 +267,12 @@ void GCAllocator::recordOOMEvent(size_t size, int device) {
     stats_->recordOOMEvent(size, device);
 }
 
-AllocationStats GCAllocator::getStats() const {
-    std::lock_guard<std::mutex> lock(stats_mutex_);
-    return *stats_;
-}
+// JO+ == MOVED TO THE GCAllocator header file ===
+//AllocationStats GCAllocator::getStats() const {
+//    std::lock_guard<std::mutex> lock(stats_mutex_);
+//    return *stats_;
+//}
+//JO-
 
 void GCAllocator::resetStats() {
     std::lock_guard<std::mutex> lock(stats_mutex_);
@@ -319,6 +322,7 @@ GCAllocatorManager::~GCAllocatorManager() {
     }
 }
 
+// Simplified installation without problematic test allocation
 void GCAllocatorManager::installAllocator() {
     std::lock_guard<std::mutex> lock(install_mutex_);
     
@@ -327,90 +331,44 @@ void GCAllocatorManager::installAllocator() {
     }
     
     try {
-        // Force CUDA initialization first
+        // Initialize CUDA if needed
         if (at::cuda::is_available()) {
             at::globalContext().lazyInitDevice(c10::DeviceType::CUDA);
-            
-            // Ensure CUDA context is created
             c10::cuda::CUDAGuard guard(0);
-            cudaDeviceSynchronize();
         }
         
-        // Create our allocator instance
+        // Store original allocator FIRST
+        original_cuda_allocator_ = c10::GetAllocator(c10::DeviceType::CUDA);
+        
+        // Create our wrapper allocator
         allocator_ = std::make_unique<GCAllocator>();
         
-        // Configure retry strategy with defaults
+        // Configure retry strategy
         RetryConfig default_config;
         default_config.max_retries = 5;
         default_config.initial_delay = std::chrono::milliseconds(50);
-        default_config.backoff_multiplier = 1.5;
-        default_config.max_delay = std::chrono::milliseconds(2000);
-        default_config.enable_cache_flush = true;
-        default_config.enable_gradient_checkpointing = true;
-        
         allocator_->configureRetryStrategy(default_config);
         
-        // Store the original allocator for restoration
-        original_cuda_allocator_ = c10::GetAllocator(c10::DeviceType::CUDA);
+        // Set thread-local pointer
+        GCAllocator::current_allocator_ = allocator_.get();
         
-        // Set our allocator as the CUDA allocator - CORRECT API
+        // Install our allocator
         c10::SetAllocator(c10::DeviceType::CUDA, allocator_.get());
         
         installed_.store(true);
         
         if (allocator_->isLoggingEnabled()) {
-            std::cout << "[GCAllocator] Successfully installed custom allocator" << std::endl;
-            
-            // Test allocation to verify it works
-            try {
-                auto test_ptr = allocator_->allocate(1024);
-                if (test_ptr.get()) {
-                    std::cout << "[GCAllocator] Allocator test successful" << std::endl;
-                }
-            } catch (const std::exception& e) {
-                std::cout << "[GCAllocator] Allocator test failed: " << e.what() << std::endl;
-            }
+            std::cout << "[GCAllocator] Successfully installed" << std::endl;
         }
         
     } catch (const std::exception& e) {
-        std::cerr << "[GCAllocator] Failed to install allocator: " << e.what() << std::endl;
+        std::cerr << "[GCAllocator] Installation failed: " << e.what() << std::endl;
         allocator_.reset();
         installed_.store(false);
         throw;
     }
 }
 
-//void GCAllocatorManager::uninstallAllocator() {
-//    std::lock_guard<std::mutex> lock(install_mutex_);
-//    
-//    if (!installed_.load()) {
-//        return;
-//    }
-//    
-//    try {
-//        // Restore original allocator safely
-//        if (original_cuda_allocator_) {
-//            c10::SetAllocator(c10::DeviceType::CUDA, original_cuda_allocator_);
-//        }
-//        
-//        if (allocator_ && allocator_->isLoggingEnabled()) {
-//            std::cout << "[GCAllocator] Uninstalled custom allocator safely" << std::endl;
-//        }
-//    } catch (const std::exception& e) {
-//        std::cerr << "[GCAllocator] Error during uninstall: " << e.what() << std::endl;
-//    }
-//    
-//    // Clear global allocations tracking
-//    {
-//        std::lock_guard<std::mutex> alloc_lock(global_allocations_mutex_);
-//        global_allocations_.clear();
-//    }
-//    
-//    // Clean up our allocator
-//    allocator_.reset();
-//    original_cuda_allocator_ = nullptr;
-//    installed_.store(false);
-//}
 void GCAllocatorManager::uninstallAllocator() {
     std::lock_guard<std::mutex> lock(install_mutex_);
     
