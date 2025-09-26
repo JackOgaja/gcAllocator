@@ -47,26 +47,90 @@ struct RetryConfig {
     bool enable_gradient_checkpointing = false;
 };
 
-// Statistics for retry operations
+//
 struct RetryStats {
     std::atomic<size_t> total_retry_attempts{0};
     std::atomic<size_t> cache_flushes{0};
     std::atomic<size_t> checkpoint_activations{0};
     std::atomic<size_t> successful_recoveries{0};
-    
-    // Add getter methods that return plain values for Python binding
+    std::atomic<size_t> exhausted_retries{0};
+    std::atomic<size_t> terminal_failures{0}; // final failures that propagate OOM
+    std::atomic<size_t> failed_intermediate_attempts{0};
+
+
+    // Default constructor
+    RetryStats() = default;
+
+    // Copy constructor - load atomic values
+    RetryStats(const RetryStats& other)
+        : total_retry_attempts(other.total_retry_attempts.load()),
+          cache_flushes(other.cache_flushes.load()),
+          checkpoint_activations(other.checkpoint_activations.load()),
+          successful_recoveries(other.successful_recoveries.load()),
+	  exhausted_retries(other.exhausted_retries.load()),
+	  terminal_failures(other.terminal_failures.load()),
+	  failed_intermediate_attempts(other.failed_intermediate_attempts.load()){
+    }
+
+    // Copy assignment operator - load atomic values
+    RetryStats& operator=(const RetryStats& other) {
+        if (this != &other) {
+            total_retry_attempts.store(other.total_retry_attempts.load());
+            cache_flushes.store(other.cache_flushes.load());
+            checkpoint_activations.store(other.checkpoint_activations.load());
+            successful_recoveries.store(other.successful_recoveries.load());
+	    exhausted_retries.store(other.exhausted_retries.load());
+	    terminal_failures.store(other.terminal_failures.load());
+	    failed_intermediate_attempts.store(other.failed_intermediate_attempts.load());
+        }
+        return *this;
+    }
+
+    // Move constructor
+    RetryStats(RetryStats&& other) noexcept
+        : total_retry_attempts(other.total_retry_attempts.load()),
+          cache_flushes(other.cache_flushes.load()),
+          checkpoint_activations(other.checkpoint_activations.load()),
+          successful_recoveries(other.successful_recoveries.load()),
+	  exhausted_retries(other.exhausted_retries.load()),
+	  terminal_failures(other.terminal_failures.load()),
+	  failed_intermediate_attempts(other.failed_intermediate_attempts.load()){
+    }
+
+    // Move assignment operator
+    RetryStats& operator=(RetryStats&& other) noexcept {
+        if (this != &other) {
+            total_retry_attempts.store(other.total_retry_attempts.load());
+            cache_flushes.store(other.cache_flushes.load());
+            checkpoint_activations.store(other.checkpoint_activations.load());
+            successful_recoveries.store(other.successful_recoveries.load());
+	    exhausted_retries.store(other.exhausted_retries.load());
+	    terminal_failures.store(other.terminal_failures.load());
+	    failed_intermediate_attempts.store(other.failed_intermediate_attempts.load());
+        }
+        return *this;
+    }
+
+    // Existing getter methods remain...
     size_t getTotalRetryAttempts() const { return total_retry_attempts.load(); }
     size_t getCacheFlushes() const { return cache_flushes.load(); }
     size_t getCheckpointActivations() const { return checkpoint_activations.load(); }
     size_t getSuccessfulRecoveries() const { return successful_recoveries.load(); }
-    
+    size_t getExhaustedRetries() const { return exhausted_retries.load(); }
+    size_t getTerminalFailures() const { return terminal_failures.load(); }
+    size_t getFailedIntermediateAttempts() const { return failed_intermediate_attempts.load(); }
+
     void reset() {
         total_retry_attempts.store(0);
         cache_flushes.store(0);
         checkpoint_activations.store(0);
         successful_recoveries.store(0);
+	exhausted_retries.store(0);
+        terminal_failures.store(0);
+	failed_intermediate_attempts.store(0);
     }
 };
+// JO-
 
 class RetryStrategy {
 public:
@@ -98,6 +162,11 @@ private:
     bool performCheckpointing();
     void performBackoff(int attempt);
 };
+
+// JO+
+// total_retry_attempts counts only attempts after the initial (attempt 0).
+// This keeps the metric focused on recovery behavior rather than baseline allocation.
+// JO -
 
 // Template implementation
 template<typename AllocatorFunc>
@@ -158,9 +227,18 @@ c10::DataPtr RetryStrategy::executeWithRetry(AllocatorFunc allocator_func, size_
                 //if (isLoggingEnabled()) {
                     std::cout << "[RetryStrategy] All retry attempts exhausted" << std::endl;
                 //}
+		// JO+
+	        stats_.exhausted_retries.fetch_add(1);
+                stats_.terminal_failures.fetch_add(1);
+
                 throw;
-            }
-            continue;
+            //}
+	    // JO+
+	    }else {
+               stats_.failed_intermediate_attempts.fetch_add(1);
+               continue;
+            }  
+            //continue;
         }
     }
     
