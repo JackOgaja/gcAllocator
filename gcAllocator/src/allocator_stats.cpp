@@ -87,8 +87,6 @@ AllocationStats& AllocationStats::operator=(const AllocationStats& other) {
     return *this;
 }
 
-// ... (other methods remain the same) ...
-
 void AllocationStats::recordSuccessfulAllocation(size_t size, int device) {
     total_allocations_.fetch_add(1);
     total_bytes_allocated_.fetch_add(size);
@@ -135,7 +133,7 @@ void AllocationStats::recordOOMEvent(size_t size, int device) {
     }
 }
 
-// CORRECTED METHOD - Properly handles atomic members
+// Properly handles atomic members
 AllocationStats::DeviceStats AllocationStats::getDeviceStats(int device) const {
     std::lock_guard<std::mutex> lock(device_stats_mutex_);
     auto it = device_stats_.find(device);
