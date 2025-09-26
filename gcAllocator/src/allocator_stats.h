@@ -84,15 +84,13 @@ public:
     // Export stats as string for logging
     std::string toString() const;
     
-    // Global statistics
-    // JO;
     std::atomic<size_t> total_allocations_{0};
     std::atomic<size_t> total_deallocations_{0};
     std::atomic<size_t> total_bytes_allocated_{0};
     std::atomic<size_t> current_bytes_allocated_{0};
     std::atomic<size_t> peak_bytes_allocated_{0};
     std::atomic<size_t> oom_count_{0};
-    
+
 private:
     // Internal atomic version for thread-safe operations
     struct AtomicDeviceStats {
