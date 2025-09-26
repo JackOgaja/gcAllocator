@@ -38,6 +38,9 @@
 #include <chrono>
 #include <functional>
 #include "retry_strategy.h"
+// JO+
+#include "allocator_stats.h"
+// JO-
 
 namespace gc_allocator {
 
@@ -60,9 +63,15 @@ public:
     c10::Allocator* getOriginalAllocator() const { return original_allocator_; }
     
     // Statistics interface
-    AllocationStats getStats() const;
+    // JO +
+    //AllocationStats getStats() const;
+    const AllocationStats& getStats() const {
+        std::lock_guard<std::mutex> lock(stats_mutex_);
+      	return *stats_;
+    }
+    // JO-
     void resetStats();
-    
+
     // Enable/disable logging
     void setLoggingEnabled(bool enabled) { logging_enabled_.store(enabled); }
     bool isLoggingEnabled() const { return logging_enabled_.load(); }
@@ -78,6 +87,32 @@ public:
     void recordDeallocation(void* ptr);
     void recordAllocationRequest(size_t size, int device);
     void recordOOMEvent(size_t size, int device);
+
+    // JO+
+    // Enhanced stats retrieval with proper aggregation
+    struct CombinedStats {
+        AllocationStats allocation_stats;
+        RetryStats retry_stats;
+
+        std::string toString() const {
+            std::stringstream ss;
+            ss << allocation_stats.toString();
+            ss << "\n--- Retry Statistics ---\n";
+            ss << "Total Retry Attempts: " << retry_stats.getTotalRetryAttempts() << "\n";
+            ss << "Cache Flushes: " << retry_stats.getCacheFlushes() << "\n";
+            ss << "Checkpoint Activations: " << retry_stats.getCheckpointActivations() << "\n";
+            ss << "Successful Recoveries: " << retry_stats.getSuccessfulRecoveries() << "\n";
+            return ss.str();
+        }
+    };
+
+    CombinedStats getCombinedStats() const {
+        CombinedStats combined;
+        combined.allocation_stats = getStats();
+        combined.retry_stats = getRetryStats();
+        return combined;
+    }
+    // JO-
 
 private:
     // Original allocator that we're wrapping
@@ -145,11 +180,7 @@ private:
     // Prevent copying - keep these in private
     GCAllocatorManager(const GCAllocatorManager&) = delete;
     GCAllocatorManager& operator=(const GCAllocatorManager&) = delete;
-    
-    //std::unique_ptr<GCAllocator> allocator_;
-    //c10::Allocator* original_cuda_allocator_{nullptr};
-    //std::atomic<bool> installed_{false};
-    //std::mutex install_mutex_;
+   
     std::unique_ptr<GCAllocator> allocator_;
     c10::Allocator* original_cuda_allocator_ = nullptr;  // Store original allocator
     std::atomic<bool> installed_{false};
