@@ -18,7 +18,7 @@ This initial phase establishes the foundation for graceful OOM handling by imple
 
 ### Data Flow
 
-<img width="1717" height="2050" alt="Correccted_CUDACachingAllocator_hook_stats_tracking" src="https://github.com/user-attachments/assets/32b02a12-6255-4b37-a629-e114bb789777" />
+<img width="1439" height="1891" alt="CUDACachingAllocator_hook_stats_tracking" src="https://github.com/user-attachments/assets/f5ada998-21cb-4169-9ded-aedb1a8fde3c" />
 
 ### Installation
 
