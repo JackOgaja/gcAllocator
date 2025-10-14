@@ -71,6 +71,50 @@ PYBIND11_MODULE(gc_allocator_core, m) {
     	throw std::runtime_error("GCAllocator not installed");
     }, "Get retry statistics directly");
     // JO-
+
+    // JO+
+    //py::class_<RetryConfig>(m, "RetryConfig")
+    //    .def(py::init<>())
+    //    .def(py::init([](int max_retries,
+    //                    int initial_delay_ms,
+    //                    double backoff_multiplier,
+    //                    int max_delay_ms,
+    //                    bool enable_cache_flush,
+    //                    bool enable_gradient_checkpointing) {
+    //        RetryConfig config;
+    //        config.max_retries = max_retries;
+    //        config.initial_delay = std::chrono::milliseconds(initial_delay_ms);
+    //        config.backoff_multiplier = backoff_multiplier;
+    //        config.max_delay = std::chrono::milliseconds(max_delay_ms);
+    //        config.enable_cache_flush = enable_cache_flush;
+    //        config.enable_gradient_checkpointing = enable_gradient_checkpointing;
+    //        return config;
+    //    }),
+    //    py::arg("max_retries") = 3,
+    //    py::arg("initial_delay_ms") = 100,
+    //    py::arg("backoff_multiplier") = 2.0,
+    //    py::arg("max_delay_ms") = 5000,
+    //    py::arg("enable_cache_flush") = true,
+    //    py::arg("enable_gradient_checkpointing") = false)
+    //    .def_readwrite("max_retries", &RetryConfig::max_retries)
+    //    .def_readwrite("backoff_multiplier", &RetryConfig::backoff_multiplier)
+    //    .def_readwrite("enable_cache_flush", &RetryConfig::enable_cache_flush)
+    //    .def_readwrite("enable_gradient_checkpointing", &RetryConfig::enable_gradient_checkpointing)
+    //    // Add property accessors for milliseconds values
+    //    .def_property("initial_delay_ms",
+    //        [](const RetryConfig& self) {
+    //            return self.initial_delay.count();
+    //        },
+    //        [](RetryConfig& self, int ms) {
+    //            self.initial_delay = std::chrono::milliseconds(ms);
+    //        })
+    //    .def_property("max_delay_ms",
+    //        [](const RetryConfig& self) {
+    //            return self.max_delay.count();
+    //        },
+    //        [](RetryConfig& self, int ms) {
+    //            self.max_delay = std::chrono::milliseconds(ms);
+    //        });
     
     // RetryStats structure - use getter methods instead of direct atomic access
     py::class_<RetryStats>(m, "RetryStats")
@@ -91,7 +135,12 @@ PYBIND11_MODULE(gc_allocator_core, m) {
         .def("get_current_bytes_allocated", &AllocationStats::getCurrentBytesAllocated)
         .def("get_peak_bytes_allocated", &AllocationStats::getPeakBytesAllocated)
         .def("get_oom_count", &AllocationStats::getOOMCount)
-        .def("get_active_devices", &AllocationStats::getActiveDevices)
+        .def("get_total_requests", &AllocationStats::getTotalRequests)
+    	.def("get_cache_hits", &AllocationStats::getCacheHits)
+    	.def("get_cache_flushes", &AllocationStats::getCacheFlushes)
+    	.def("get_stream_events", &AllocationStats::getStreamEvents)
+    	.def("get_cache_hit_rate", &AllocationStats::getCacheHitRate)
+	.def("get_active_devices", &AllocationStats::getActiveDevices)
         .def("reset", &AllocationStats::reset)
         .def("__str__", &AllocationStats::toString);
  
@@ -120,6 +169,55 @@ PYBIND11_MODULE(gc_allocator_core, m) {
              py::return_value_policy::reference_internal)
         .def("reset_retry_stats", &GCAllocatorManager::resetRetryStats);
   
+    // JO:	
+    //// Main module functions
+    //m.def("install_allocator", []() {
+    //    GCAllocatorManager::getInstance().installAllocator();
+    //}, "Install the GCAllocator as the default CUDA allocator");
+    //
+    //m.def("uninstall_allocator", []() {
+    //    GCAllocatorManager::getInstance().uninstallAllocator();
+    //}, "Uninstall the GCAllocator and restore the original allocator");
+    //
+    //m.def("is_installed", []() {
+    //    return GCAllocatorManager::getInstance().isInstalled();
+    //}, "Check if GCAllocator is currently installed");
+    //
+    //m.def("get_stats", []() {
+    //    auto* allocator = GCAllocatorManager::getInstance().getAllocator();
+    //    if (allocator) {
+    //        return allocator->getStats();
+    //    }
+    //    throw std::runtime_error("GCAllocator is not installed");
+    //}, "Get current allocation statistics");
+    //
+    //m.def("reset_stats", []() {
+    //    auto* allocator = GCAllocatorManager::getInstance().getAllocator();
+    //    if (allocator) {
+    //        allocator->resetStats();
+    //    } else {
+    //        throw std::runtime_error("GCAllocator is not installed");
+    //    }
+    //}, "Reset allocation statistics");
+    //
+    //m.def("enable_logging", []() {
+    //    GCAllocatorManager::getInstance().enableLogging();
+    //}, "Enable detailed allocation logging");
+    //
+    //m.def("disable_logging", []() {
+    //    GCAllocatorManager::getInstance().disableLogging();
+    //}, "Disable detailed allocation logging");
+    //
+    //// FIXED: Properly return the manager instance
+    //m.def("get_manager", []() -> GCAllocatorManager& {
+    //    return GCAllocatorManager::getInstance();
+    //}, py::return_value_policy::reference, "Get the GCAllocatorManager instance");
+    //
+    //// Helper function to create milliseconds duration
+    //m.def("milliseconds", [](int64_t ms) {
+    //    return std::chrono::milliseconds(ms);
+    //});
+    //=== JO
     // Helper function to create milliseconds duration
     m.def("milliseconds", [](int64_t ms) {
         return std::chrono::milliseconds(ms);
@@ -144,9 +242,10 @@ PYBIND11_MODULE(gc_allocator_core, m) {
         auto* allocator = GCAllocatorManager::getInstance().getAllocator();
         if (allocator) {
 	    // JO + 20250925
-            //return allocator->getStats();
-	    const AllocationStats& stats = allocator->getStats();
-	    return stats;
+	    py::print("SOME NUMBERS==:", allocator->getStats().getTotalRequests());
+            return allocator->getStats();
+	    //const AllocationStats& stats = allocator->getStats();
+	    //return stats;
         }
         throw std::runtime_error("GCAllocator is not installed");
     }, "Get current allocation statistics");
