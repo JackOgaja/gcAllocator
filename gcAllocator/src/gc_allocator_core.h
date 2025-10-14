@@ -38,72 +38,69 @@
 #include <chrono>
 #include <functional>
 #include "retry_strategy.h"
-// JO+
 #include "allocator_stats.h"
-// JO-
 
 namespace gc_allocator {
 
-// Forward declarations
-class AllocationStats;
 class GCAllocatorManager;
 
-// Custom allocator that wraps PyTorch's CUDA allocator
+// Enhanced GCAllocator with Proxy Pattern
 class GCAllocator : public c10::Allocator {
 public:
     GCAllocator();
     ~GCAllocator() override;
 
-    // Core allocator interface - required by c10::Allocator
+    // Core allocator interface
     c10::DataPtr allocate(size_t n) override;
     c10::DeleterFnPtr raw_deleter() const override;
     void copy_data(void* dest, const void* src, std::size_t count) const override;
 
-    // Get the original allocator for passthrough
-    c10::Allocator* getOriginalAllocator() const { return original_allocator_; }
-    
+    // Additional CachingAllocator interface methods for complete proxying
+    void recordStream(const c10::DataPtr& ptr, c10::cuda::CUDAStream stream);
+    void emptyCache();
+    size_t getCachedBytes(int device);
+
+    // Proxy pattern setup
+    void setWrappedAllocator(c10::Allocator* wrapped);
+    c10::Allocator* getWrappedAllocator() const { return wrapped_allocator_; }
+
     // Statistics interface
-    // JO +
-    //AllocationStats getStats() const;
     const AllocationStats& getStats() const {
         std::lock_guard<std::mutex> lock(stats_mutex_);
-      	return *stats_;
+
+	// JO + INSTRUMENTATION
+	// In the getStats method, add instrumentation:
+    	if (stats_->isInstrumentationEnabled()) {
+        	std::cout << "[GC_INSTRUMENT] getStats() returning instance #"
+                	  << stats_->getInstanceId() << " at " << stats_.get()
+                  	  << " with total_allocations=" << stats_->getTotalAllocations()
+                  	  << " total_requests=" << stats_->getTotalRequests()
+                  	  << std::endl;
+    	}
+    	// JO---
+	
+        return *stats_;
     }
-    // JO-
     void resetStats();
 
-    // Enable/disable logging
+    // Configuration
     void setLoggingEnabled(bool enabled) { logging_enabled_.store(enabled); }
     bool isLoggingEnabled() const { return logging_enabled_.load(); }
-
-    // Retry strategy configuration
     void configureRetryStrategy(const RetryConfig& config);
     void registerCheckpointCallback(std::function<bool()> callback);
-    const RetryStats& getRetryStats() const;  // Changed to return const reference
+    const RetryStats& getRetryStats() const;
     void resetRetryStats();
 
-    // Public allocation tracking for wrapper
+    // Enhanced tracking with allocation map
     void recordAllocation(void* ptr, size_t size, int device);
     void recordDeallocation(void* ptr);
     void recordAllocationRequest(size_t size, int device);
     void recordOOMEvent(size_t size, int device);
 
-    // JO+
-    // Enhanced stats retrieval with proper aggregation
     struct CombinedStats {
         AllocationStats allocation_stats;
         RetryStats retry_stats;
-
-        std::string toString() const {
-            std::stringstream ss;
-            ss << allocation_stats.toString();
-            ss << "\n--- Retry Statistics ---\n";
-            ss << "Total Retry Attempts: " << retry_stats.getTotalRetryAttempts() << "\n";
-            ss << "Cache Flushes: " << retry_stats.getCacheFlushes() << "\n";
-            ss << "Checkpoint Activations: " << retry_stats.getCheckpointActivations() << "\n";
-            ss << "Successful Recoveries: " << retry_stats.getSuccessfulRecoveries() << "\n";
-            return ss.str();
-        }
+        std::string toString() const;
     };
 
     CombinedStats getCombinedStats() const {
@@ -112,84 +109,71 @@ public:
         combined.retry_stats = getRetryStats();
         return combined;
     }
-    // JO-
 
 private:
-    // Original allocator that we're wrapping
-    c10::Allocator* original_allocator_;
-    
+    // PROXY PATTERN: Wrapped allocator instead of original
+    c10::Allocator* wrapped_allocator_{nullptr};
+
     // Thread-safe statistics tracking
     mutable std::mutex stats_mutex_;
     std::unique_ptr<AllocationStats> stats_;
-    
+
     // Retry strategy
     std::unique_ptr<RetryStrategy> retry_strategy_;
-    
+
     // Configuration
     std::atomic<bool> logging_enabled_{false};
-    
-    // Track allocations for proper cleanup
+
+    // ENHANCED: Complete allocation tracking with size info
     struct AllocationInfo {
         size_t size;
         int device;
         std::chrono::steady_clock::time_point timestamp;
     };
-    std::unordered_map<void*, AllocationInfo> active_allocations_;
-    mutable std::mutex allocations_mutex_;
-    
-    // Static deleter function that routes back to instance
+
+    // CRITICAL: Use concurrent map for thread-safe access
+    std::unordered_map<void*, AllocationInfo> allocation_map_;
+    mutable std::mutex allocation_map_mutex_;
+
+    // Track CUDA memory for cache detection
+    std::atomic<size_t> last_cuda_bytes_allocated_{0};
+
+    // Delete function routing
     static void deleteFunction(void* ptr);
-    
-    // Thread-local storage for current allocator instance
+
+    // Thread-local storage for current allocator
     static thread_local GCAllocator* current_allocator_;
-    
-    // Friend class to access global tracking
+
     friend class GCAllocatorManager;
 };
 
-// Global allocator instance management
 class GCAllocatorManager {
 public:
     static GCAllocatorManager& getInstance();
-    
-    // Install/uninstall the custom allocator
+
     void installAllocator();
     void uninstallAllocator();
-    
-    // Check if custom allocator is installed
     bool isInstalled() const { return installed_.load(); }
-    
-    // Get the current allocator instance
     GCAllocator* getAllocator() { return allocator_.get(); }
-    
-    // Enable/disable logging globally
+
     void enableLogging();
     void disableLogging();
-    
-    // Retry strategy configuration
     void configureRetryStrategy(const RetryConfig& config);
     void registerCheckpointCallback(std::function<bool()> callback);
     const RetryStats& getRetryStats() const;
     void resetRetryStats();
-    
+
     ~GCAllocatorManager();
 
 private:
     GCAllocatorManager() = default;
-    
-    // Prevent copying - keep these in private
     GCAllocatorManager(const GCAllocatorManager&) = delete;
     GCAllocatorManager& operator=(const GCAllocatorManager&) = delete;
-   
+
     std::unique_ptr<GCAllocator> allocator_;
-    c10::Allocator* original_cuda_allocator_ = nullptr;  // Store original allocator
+    c10::Allocator* original_cuda_allocator_{nullptr};
     std::atomic<bool> installed_{false};
     mutable std::mutex install_mutex_;
-
-    static std::unordered_map<void*, size_t> global_allocations_;
-    static std::mutex global_allocations_mutex_;
-
-    friend class GCAllocator;
 };
 
 } // namespace gc_allocator
