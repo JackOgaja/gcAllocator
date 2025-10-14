@@ -21,8 +21,8 @@
 # SOFTWARE.
 
 """
-gcAllocator - Graceful CUDA Allocator for PyTorch (with backward compatibility)
-Advanced Python interface with backward compatibility and proper state management.
+gcAllocator - Graceful CUDA Allocator for PyTorch with Proxy Pattern
+Complete Python interface with full proxy pattern support and statistics tracking.
 """
 
 import os
@@ -33,12 +33,16 @@ import threading
 import asyncio
 import weakref
 import functools
+import logging
 from typing import Optional, Dict, Any, Callable, List, Union, Tuple
 from dataclasses import dataclass, asdict, field
 from enum import IntEnum
 from contextlib import contextmanager
-import logging
 import torch
+
+### JO====== TEST===
+import pprint
+### JO -------------
 
 # Import the C++ extension
 try:
@@ -50,14 +54,23 @@ except ImportError as e:
     )
     raise
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"  # Updated for proxy pattern
 
 # Configure logging
 logger = logging.getLogger("gcAllocator")
+logger.setLevel(logging.INFO)
 
-# Global state management - CRITICAL for test compatibility
+# Add console handler if not already present
+if not logger.handlers:
+    handler = logging.StreamHandler()
+    formatter = logging.Formatter('[%(name)s] %(levelname)s: %(message)s')
+    handler.setFormatter(formatter)
+    logger.addHandler(handler)
+
+# Global state management
 _global_allocator_instance: Optional['GCAllocator'] = None
 _is_globally_installed: bool = False
+_allocator_lock = threading.Lock()
 
 
 class MemoryPressureLevel(IntEnum):
@@ -91,6 +104,8 @@ class RetryConfig:
             raise ValueError("initial_backoff_ms must be >= 0")
         if self.backoff_multiplier < 1.0:
             raise ValueError("backoff_multiplier must be >= 1.0")
+        if self.max_backoff_ms < self.initial_backoff_ms:
+            raise ValueError("max_backoff_ms must be >= initial_backoff_ms")
             
     @classmethod
     def from_env(cls) -> 'RetryConfig':
@@ -111,13 +126,12 @@ class RetryConfig:
                 try:
                     config[config_key] = converter(value)
                 except (ValueError, TypeError):
-                    pass
+                    logger.warning(f"Invalid value for {env_var}: {value}")
         
         return cls(**config)
     
     def to_cpp_config(self) -> Any:
-        """Convert to C++ RetryConfig using existing binding helper"""
-        # Use the create_retry_config helper that exists in bindings
+        """Convert to C++ RetryConfig"""
         return gc_allocator_core.create_retry_config({
             'max_retries': self.max_attempts,
             'initial_delay_ms': self.initial_backoff_ms,
@@ -126,70 +140,96 @@ class RetryConfig:
             'enable_cache_flush': self.enable_cache_flush,
             'enable_checkpointing': self.enable_checkpointing
         })
+    
+    def to_dict(self) -> dict:
+        """Export configuration as dictionary"""
+        return asdict(self)
 
 
 class RetryStats:
-    """Wrapper for retry statistics from C++"""
-
+    """Enhanced wrapper for retry statistics with proxy pattern support"""
+    
     def __init__(self, cpp_stats=None):
-        """
-        Initialize RetryStats wrapper.
-
-        Args:
-            cpp_stats: C++ RetryStats object or None for empty stats
-        """
+        """Initialize RetryStats wrapper"""
         if cpp_stats is None:
-            # Create empty stats if none provided
             self._stats = self._create_empty_stats()
         else:
             self._stats = cpp_stats
-
+    
     def _create_empty_stats(self):
-        """Create an empty stats object for when allocator isn't installed"""
-        # This is a placeholder - actual empty stats should come from C++
+        """Create empty stats object"""
         class EmptyStats:
             def get_total_retry_attempts(self): return 0
             def get_cache_flushes(self): return 0
             def get_checkpoint_activations(self): return 0
             def get_successful_recoveries(self): return 0
+            def get_exhausted_retries(self): return 0
+            def get_terminal_failures(self): return 0
             def reset(self): pass
         return EmptyStats()
-
+    
     @property
     def total_retry_attempts(self) -> int:
         return self._stats.get_total_retry_attempts()
-
+    
     @property
     def cache_flushes(self) -> int:
         return self._stats.get_cache_flushes()
-
+    
     @property
     def checkpoint_activations(self) -> int:
         return self._stats.get_checkpoint_activations()
-
+    
     @property
     def successful_recoveries(self) -> int:
         return self._stats.get_successful_recoveries()
-
+    
+    @property
+    def exhausted_retries(self) -> int:
+        try:
+            return self._stats.get_exhausted_retries()
+        except AttributeError:
+            return 0
+    
+    @property
+    def terminal_failures(self) -> int:
+        try:
+            return self._stats.get_terminal_failures()
+        except AttributeError:
+            return 0
+    
     def reset(self):
-        """Reset all retry statistics to zero"""
+        """Reset all retry statistics"""
         self._stats.reset()
-
+    
+    def to_dict(self) -> dict:
+        """Export statistics as dictionary"""
+        return {
+            'total_retry_attempts': self.total_retry_attempts,
+            'cache_flushes': self.cache_flushes,
+            'checkpoint_activations': self.checkpoint_activations,
+            'successful_recoveries': self.successful_recoveries,
+            'exhausted_retries': self.exhausted_retries,
+            'terminal_failures': self.terminal_failures,
+        }
+    
     def __str__(self) -> str:
         return (f"RetryStats(attempts={self.total_retry_attempts}, "
                 f"flushes={self.cache_flushes}, "
                 f"checkpoints={self.checkpoint_activations}, "
                 f"recoveries={self.successful_recoveries})")
-
+    
     def __repr__(self) -> str:
         return f"<RetryStats attempts={self.total_retry_attempts} recoveries={self.successful_recoveries}>"
 
+
 class AllocationStats:
-    """Wrapper for allocation statistics from C++ - BACKWARD COMPATIBLE"""
+    """Enhanced allocation statistics wrapper with proxy pattern support"""
     
     def __init__(self, cpp_stats):
         self._stats = cpp_stats
     
+    # Core statistics properties
     @property
     def total_allocations(self) -> int:
         return self._stats.get_total_allocations()
@@ -214,23 +254,156 @@ class AllocationStats:
     def oom_count(self) -> int:
         return self._stats.get_oom_count()
     
+    # Proxy pattern statistics
+    @property
+    def total_requests(self) -> int:
+        return self._stats.get_total_requests()
+    
+    @property
+    def cache_hits(self) -> int:
+        return self._stats.get_cache_hits()
+    
+    @property
+    def cache_flushes(self) -> int:
+        return self._stats.get_cache_flushes()
+    
+    @property
+    def stream_events(self) -> int:
+        return self._stats.get_stream_events()
+    
+    @property
+    def cache_hit_rate(self) -> float:
+        return self._stats.get_cache_hit_rate()
+    
     @property
     def active_devices(self) -> list:
         return self._stats.get_active_devices()
     
+    # Computed properties
+    @property
+    def actual_allocations(self) -> int:
+        """Number of actual CUDA allocations (excluding cache hits)"""
+        return self.total_requests - self.cache_hits
+    
+    @property
+    def memory_efficiency(self) -> float:
+        """Ratio of current to total allocated memory"""
+        if self.total_bytes_allocated == 0:
+            return 0.0
+        return self.current_bytes_allocated / self.total_bytes_allocated
+    
+    @property
+    def allocation_overhead(self) -> float:
+        """Average bytes per allocation"""
+        if self.total_allocations == 0:
+            return 0.0
+        return self.total_bytes_allocated / self.total_allocations
+    
     def reset(self):
-        """Reset all statistics to zero"""
+        """Reset all statistics"""
         self._stats.reset()
+    
+    def get_device_stats(self, device: int) -> dict:
+        """Get statistics for specific device"""
+        try:
+            # Assuming C++ returns device stats
+            return self._stats.get_device_stats(device)
+        except AttributeError:
+            return {}
+    
+    def to_dict(self) -> dict:
+        """Export statistics as dictionary"""
+        return {
+            'total_allocations': self.total_allocations,
+            'total_deallocations': self.total_deallocations,
+            'total_bytes_allocated': self.total_bytes_allocated,
+            'current_bytes_allocated': self.current_bytes_allocated,
+            'peak_bytes_allocated': self.peak_bytes_allocated,
+            'oom_count': self.oom_count,
+            'total_requests': self.total_requests,
+            'cache_hits': self.cache_hits,
+            'cache_flushes': self.cache_flushes,
+            'stream_events': self.stream_events,
+            'cache_hit_rate': self.cache_hit_rate,
+            'actual_allocations': self.actual_allocations,
+            'memory_efficiency': self.memory_efficiency,
+            'active_devices': self.active_devices,
+        }
     
     def __str__(self) -> str:
         return str(self._stats)
     
     def __repr__(self) -> str:
-        return f"<AllocationStats allocations={self.total_allocations} current_mb={self.current_bytes_allocated/(1024**2):.2f}>"
+        return (f"<AllocationStats requests={self.total_requests} "
+                f"cache_hits={self.cache_hits} "
+                f"current_mb={self.current_bytes_allocated/(1024**2):.2f}>")
+
+
+class StatsAggregator:
+    """Aggregates allocation and retry statistics with proxy insights"""
+    
+    def __init__(self, allocation_stats: AllocationStats, retry_stats: RetryStats):
+        self.allocation_stats = allocation_stats
+        self.retry_stats = retry_stats
+        self._compute_derived_metrics()
+    
+    def _compute_derived_metrics(self):
+        """Compute derived metrics from raw stats"""
+        # OOM recovery rate
+        self.oom_recovery_rate = 0.0
+        if self.retry_stats.total_retry_attempts > 0:
+            self.oom_recovery_rate = (
+                self.retry_stats.successful_recoveries / 
+                self.retry_stats.total_retry_attempts
+            )
+        
+        # Memory efficiency
+        self.memory_efficiency = self.allocation_stats.memory_efficiency
+        
+        # Cache effectiveness
+        self.cache_effectiveness = self.allocation_stats.cache_hit_rate
+        
+        # Allocation success rate
+        total_attempts = (self.allocation_stats.total_requests + 
+                         self.allocation_stats.oom_count)
+        self.allocation_success_rate = 0.0
+        if total_attempts > 0:
+            self.allocation_success_rate = (
+                self.allocation_stats.total_requests / total_attempts
+            )
+    
+    def to_dict(self) -> dict:
+        """Export all stats as dictionary"""
+        return {
+            'allocation': self.allocation_stats.to_dict(),
+            'retry': self.retry_stats.to_dict(),
+            'derived': {
+                'oom_recovery_rate': self.oom_recovery_rate,
+                'memory_efficiency': self.memory_efficiency,
+                'cache_effectiveness': self.cache_effectiveness,
+                'allocation_success_rate': self.allocation_success_rate,
+            }
+        }
+    
+    def summary(self) -> str:
+        """Generate human-readable summary"""
+        return (
+            f"=== Allocation Summary ===\n"
+            f"Total Requests: {self.allocation_stats.total_requests:,}\n"
+            f"Cache Hit Rate: {self.cache_effectiveness:.1%}\n"
+            f"Current Memory: {self.allocation_stats.current_bytes_allocated/(1024**3):.2f} GB\n"
+            f"Peak Memory: {self.allocation_stats.peak_bytes_allocated/(1024**3):.2f} GB\n"
+            f"OOM Recovery Rate: {self.oom_recovery_rate:.1%}\n"
+            f"Allocation Success Rate: {self.allocation_success_rate:.1%}\n"
+        )
+    
+    def __repr__(self):
+        return (f"<StatsAggregator cache_rate={self.cache_effectiveness:.1%} "
+                f"oom_recovery={self.oom_recovery_rate:.1%}>")
 
 
 class AllocationFuture:
-    """Future-like object for asynchronous allocation"""
+    """Future for asynchronous allocations (preparation for async support)"""
     
     def __init__(self, size: int, device: int):
         self.size = size
@@ -240,9 +413,9 @@ class AllocationFuture:
         self._done = threading.Event()
         self._callbacks = []
         self._lock = threading.Lock()
-        
+    
     def result(self, timeout: Optional[float] = None) -> torch.Tensor:
-        """Block until allocation completes or timeout"""
+        """Block until allocation completes"""
         if not self._done.wait(timeout):
             raise TimeoutError(f"Allocation timeout after {timeout}s")
         
@@ -264,7 +437,7 @@ class AllocationFuture:
         return isinstance(self._exception, asyncio.CancelledError)
     
     def cancel(self) -> bool:
-        """Attempt to cancel the allocation"""
+        """Attempt to cancel allocation"""
         with self._lock:
             if self._done.is_set():
                 return False
@@ -274,7 +447,7 @@ class AllocationFuture:
             return True
     
     def add_done_callback(self, fn: Callable) -> None:
-        """Add callback to be called when allocation completes"""
+        """Add callback for completion"""
         with self._lock:
             if self._done.is_set():
                 fn(self)
@@ -296,121 +469,78 @@ class AllocationFuture:
             self._run_callbacks()
     
     def _run_callbacks(self) -> None:
-        """Internal: Run all registered callbacks"""
+        """Internal: Run registered callbacks"""
         for callback in self._callbacks:
             try:
                 callback(self)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.exception(f"Callback error: {e}")
 
-# JO+
-class StatsAggregator:
-    """Aggregates and formats allocation and retry statistics"""
-    
-    def __init__(self, allocation_stats: AllocationStats, retry_stats: RetryStats):
-        self.allocation_stats = allocation_stats
-        self.retry_stats = retry_stats
-        self._compute_derived_metrics()
-    
-    def _compute_derived_metrics(self):
-        """Compute derived metrics from raw stats"""
-        self.oom_recovery_rate = 0.0
-        if self.retry_stats.total_retry_attempts > 0:
-            self.oom_recovery_rate = (
-                self.retry_stats.successful_recoveries / 
-                self.retry_stats.total_retry_attempts
-            )
-        
-        self.memory_efficiency = 0.0
-        if self.allocation_stats.total_bytes_allocated > 0:
-            self.memory_efficiency = (
-                self.allocation_stats.current_bytes_allocated /
-                self.allocation_stats.total_bytes_allocated
-            )
-    
-    def to_dict(self) -> dict:
-        """Export all stats as dictionary"""
-        return {
-            'allocation': {
-                'total_allocations': self.allocation_stats.total_allocations,
-                'current_bytes': self.allocation_stats.current_bytes_allocated,
-                'peak_bytes': self.allocation_stats.peak_bytes_allocated,
-                'oom_events': self.allocation_stats.oom_count,
-            },
-            'retry': {
-                'attempts': self.retry_stats.total_retry_attempts,
-                'recoveries': self.retry_stats.successful_recoveries,
-                'cache_flushes': self.retry_stats.cache_flushes,
-                'checkpoints': self.retry_stats.checkpoint_activations,
-            },
-            'derived': {
-                'oom_recovery_rate': self.oom_recovery_rate,
-                'memory_efficiency': self.memory_efficiency,
-            }
-        }
-    
-    def __repr__(self):
-        return f"<StatsAggregator OOM_rate={self.oom_recovery_rate:.2%} efficiency={self.memory_efficiency:.2%}>"
-# JO-
 
 class GCAllocator:
-    """Main interface for graceful CUDA allocator - BACKWARD COMPATIBLE"""
+    """Main interface for graceful CUDA allocator with Proxy Pattern"""
     
     def __init__(self, 
                  config: RetryConfig = None,
                  enable_logging: bool = False,
                  retry_config: RetryConfig = None):
         """
-        Initialize GCAllocator with backward compatibility.
+        Initialize GCAllocator with proxy pattern support
         
         Args:
-            config: New-style RetryConfig object
+            config: RetryConfig object for retry behavior
             enable_logging: Enable detailed logging
-            retry_config: Legacy parameter name for config
+            retry_config: Legacy parameter (backward compatibility)
         """
         global _global_allocator_instance
-        #JO+ self.allocation_tracker = AllocationTracker(self)
         
-        # Handle backward compatibility for retry_config parameter
+        # Handle backward compatibility
         if retry_config is not None and config is None:
             config = retry_config
-            
-        # Check environment variable for logging
-        env_logging = os.environ.get("GC_ALLOCATOR_LOG", "0")
-        self.enable_logging = enable_logging or env_logging.lower() in ("1", "true", "yes", "on")
         
+        # Configuration
         self.config = config or RetryConfig()
+        
+        # Logging configuration
+        env_logging = os.environ.get("GC_ALLOCATOR_LOG", "0")
+        self.enable_logging = enable_logging or env_logging.lower() in ("1", "true")
+        
+        # State tracking
         self._installed = False
         self._manager = None
         self._checkpoint_callbacks = []
         self._lock = threading.Lock()
-        
-        # Track if this is the global instance
         self._is_global = False
+        
+        # Statistics cache for performance
+        self._stats_cache = None
+        self._stats_cache_time = 0
+        self._stats_cache_duration = 0.1  # Cache for 100ms
+        
+        if self.enable_logging:
+            logger.info(f"GCAllocator initialized with config: {self.config}")
     
     @property  
     def is_installed(self) -> bool:
-        """Check if this allocator instance is currently installed"""
+        """Check if allocator is installed"""
         return self._installed
     
     def install(self) -> None:
-        """Install the allocator as PyTorch's CUDA allocator"""
+        """Install allocator as PyTorch's CUDA allocator using proxy pattern"""
         global _global_allocator_instance, _is_globally_installed
-       
-        # Enable Python-level tracking
-        # JO+ self.allocation_tracker.enable_tracking()
-
+        
         with self._lock:
             if self._installed:
-                warnings.warn("GCAllocator is already installed for this instance")
+                warnings.warn("GCAllocator already installed for this instance")
                 return
             
             # Handle global state replacement
             if _is_globally_installed and _global_allocator_instance and _global_allocator_instance != self:
+                logger.info("Replacing existing global allocator")
                 _global_allocator_instance.uninstall()
             
             if not torch.cuda.is_available():
-                raise RuntimeError("CUDA is not available. GCAllocator requires CUDA support.")
+                raise RuntimeError("CUDA is not available")
             
             try:
                 # Get manager instance
@@ -419,32 +549,33 @@ class GCAllocator:
                 # Configure retry strategy
                 self._manager.configure_retry_strategy(self.config.to_cpp_config())
                 
-                # Install the allocator
+                # Install allocator with proxy pattern
                 self._manager.install_allocator()
                 
                 # Configure logging
                 if self.enable_logging:
                     self._manager.enable_logging()
                 
+                # Set installation state
                 self._installed = True
-                self._is_global = True
+                
+                # Update global state
                 _global_allocator_instance = self
                 _is_globally_installed = True
                 
                 if self.enable_logging:
-                    print(f"[GCAllocator] v{__version__} installed successfully")
+                    logger.info(f"GCAllocator v{__version__} installed (proxy mode)")
                     
             except Exception as e:
                 self._installed = False
+                _global_allocator_instance = None
+                _is_globally_installed = False
                 raise RuntimeError(f"Failed to install allocator: {e}")
     
     def uninstall(self) -> None:
-        """Uninstall the allocator and restore PyTorch's default allocator"""
+        """Uninstall allocator and restore default"""
         global _global_allocator_instance, _is_globally_installed
-       
-        # Disable Python-level tracking first
-        # JO+ self.allocation_tracker.disable_tracking()
-
+        
         with self._lock:
             if not self._installed:
                 return
@@ -461,11 +592,10 @@ class GCAllocator:
                     _is_globally_installed = False
                 
                 if self.enable_logging:
-                    print("[GCAllocator] Uninstalled successfully")
+                    logger.info("GCAllocator uninstalled")
                     
             except Exception as e:
                 warnings.warn(f"Error during uninstall: {e}")
-                # Force reset state even if C++ uninstall fails
                 self._installed = False
                 if _global_allocator_instance == self:
                     _global_allocator_instance = None
@@ -476,106 +606,108 @@ class GCAllocator:
         if not self._installed:
             warnings.warn("Getting stats from non-installed allocator")
         
-        # JO+++cpp_stats = gc_allocator_core.get_stats()
-        return gc_allocator_core.get_stats()
-        # JO++return AllocationStats(cpp_stats)
-  
-    # JO+
-    #def get_retry_stats():
-    #    mgr = gc_allocator_core.get_manager()
-    #    stats = mgr.get_retry_stats()
-    #    return {
-    #        "retry_attempts": stats.get_total_retry_attempts(),
-    #        "cache_flushes": stats.get_cache_flushes(),
-    #        "checkpoint_activations": stats.get_checkpoint_activations(),
-    #        "successful_recoveries": stats.get_successful_recoveries(),
-    #        # Optional new fields if added:
-    #        "exhausted_retries": getattr(stats, "get_exhausted_retries", lambda: None)(),
-    #        "terminal_failures": getattr(stats, "get_terminal_failures", lambda: None)(),
-    #    }
+        try:
+            cpp_stats = gc_allocator_core.get_stats()
+            ## JO++ TEST
+            ##pprint.pprint(cpp_stats)
+            return AllocationStats(cpp_stats)
+        except Exception as e:
+            logger.error(f"Failed to get stats: {e}")
+            raise
+    
     def get_retry_stats(self) -> RetryStats:
-        """Get retry statistics only"""
+        """Get retry statistics"""
         if not self._installed:
-            return RetryStats()  # Return empty stats
-
+            return RetryStats()
+        
         try:
             manager = gc_allocator_core.get_manager()
             cpp_stats = manager.get_retry_stats()
             return RetryStats(cpp_stats)
         except Exception as e:
-            warnings.warn(f"Failed to get retry stats: {e}")
+            logger.warning(f"Failed to get retry stats: {e}")
             return RetryStats()
-    # JO-
-
+    
+    def get_combined_stats(self) -> StatsAggregator:
+        """Get combined allocation and retry statistics"""
+        try:
+            alloc_stats = self.get_stats()
+            retry_stats = self.get_retry_stats()
+            return StatsAggregator(alloc_stats, retry_stats)
+        except Exception as e:
+            logger.warning(f"Failed to get combined stats: {e}")
+            return StatsAggregator(
+                AllocationStats(gc_allocator_core.get_stats()),
+                RetryStats()
+            )
+    
     def reset_stats(self) -> None:
-        """Reset allocation statistics"""
+        """Reset all statistics"""
         if self._manager:
             gc_allocator_core.reset_stats()
-   
-    # JO+
-    #@staticmethod
-    #def get_combined_stats() -> StatsAggregator:
-    #    """Get aggregated allocation and retry statistics"""
-    #    if not self._installed:
-    #        warnings.warn("Getting stats from non-installed allocator")
-    #    
-    #    try:
-    #        # Try to get combined stats if available
-    #        combined = gc_allocator_core.get_combined_stats()
-    #        return StatsAggregator(
-    #            AllocationStats(combined.allocation_stats),
-    #            RetryStats(combined.retry_stats)
-    #        )
-    #    except AttributeError:
-    #        # Fallback for older versions
-    #        alloc_stats = self.get_stats()
-    #        retry_stats = gc_allocator_core.get_retry_stats()
-    #        return StatsAggregator(alloc_stats, retry_stats)
-    #@staticmethod
-    def get_combined_stats(self) -> 'StatsAggregator':
-        """Get aggregated allocation and retry statistics"""
-        if not self._installed:
-            warnings.warn("Getting stats from non-installed allocator")
-        
-        try:
-            # Get allocation stats
-            cpp_alloc_stats = gc_allocator_core.get_stats()
-            alloc_stats = AllocationStats(cpp_alloc_stats)
-            
-            # Get retry stats from manager
-            manager = gc_allocator_core.get_manager()
-            cpp_retry_stats = manager.get_retry_stats()
-            retry_stats = RetryStats(cpp_retry_stats)
-            
-            # Return aggregated stats
-            return StatsAggregator(alloc_stats, retry_stats)
-            
-        except Exception as e:
-            warnings.warn(f"Failed to get combined stats: {e}")
-            # Return empty stats on failure
-            empty_alloc = AllocationStats(gc_allocator_core.get_stats())
-            empty_retry = RetryStats()
-            return StatsAggregator(empty_alloc, empty_retry)
-
-    # BACKWARD COMPATIBILITY METHODS
+            self._manager.reset_retry_stats()
+            logger.info("Statistics reset")
+    
+    def configure_retry(self, config: RetryConfig) -> None:
+        """Update retry configuration"""
+        self.config = config
+        if self._manager:
+            self._manager.configure_retry_strategy(config.to_cpp_config())
+            logger.info(f"Retry configuration updated: {config}")
+    
+    def register_checkpoint(self, callback: Callable[[], bool]) -> None:
+        """Register checkpoint callback for OOM recovery"""
+        self._checkpoint_callbacks.append(callback)
+        if self._installed and self._manager:
+            self._manager.register_checkpoint_callback(callback)
+            logger.info("Checkpoint callback registered")
+    
     def enable_logging_runtime(self) -> None:
-        """Enable logging at runtime - BACKWARD COMPATIBLE"""
+        """Enable logging at runtime"""
         self.enable_logging = True
         if self._installed and self._manager:
             self._manager.enable_logging()
+            logger.info("Logging enabled")
     
     def disable_logging_runtime(self) -> None:
-        """Disable logging at runtime - BACKWARD COMPATIBLE"""
+        """Disable logging at runtime"""
         self.enable_logging = False
         if self._installed and self._manager:
             self._manager.disable_logging()
+            logger.info("Logging disabled")
+    
+    def empty_cache(self) -> None:
+        """Empty CUDA cache"""
+        if self._installed:
+            torch.cuda.empty_cache()
+            logger.info("CUDA cache emptied")
+    
+    def get_memory_info(self, device: Optional[int] = None) -> dict:
+        """Get detailed memory information"""
+        if device is None:
+            device = torch.cuda.current_device()
+        
+        stats = self.get_stats()
+        
+        # Get CUDA memory info
+        free, total = torch.cuda.mem_get_info(device)
+        
+        return {
+            'device': device,
+            'total_memory': total,
+            'free_memory': free,
+            'allocated_by_pytorch': stats.current_bytes_allocated,
+            'cached_by_pytorch': torch.cuda.memory_reserved(device),
+            'peak_allocated': stats.peak_bytes_allocated,
+            'cache_hit_rate': stats.cache_hit_rate,
+            'oom_events': stats.oom_count,
+        }
     
     def allocate_async(self, size: int, device: int = 0) -> AllocationFuture:
-        """Allocate memory asynchronously (Phase 4 preparation)"""
+        """Allocate memory asynchronously (future support)"""
         if not self._installed:
-            raise RuntimeError("Allocator is not installed")
+            raise RuntimeError("Allocator not installed")
         
-        # For now, return a simple future that allocates synchronously
         future = AllocationFuture(size, device)
         
         def allocate():
@@ -588,12 +720,6 @@ class GCAllocator:
         threading.Thread(target=allocate, daemon=True).start()
         return future
     
-    def register_checkpoint(self, callback: Callable[[], bool]) -> None:
-        """Register checkpoint callback - BACKWARD COMPATIBLE"""
-        self._checkpoint_callbacks.append(callback)
-        if self._installed and self._manager:
-            self._manager.register_checkpoint_callback(callback)
-    
     def __enter__(self):
         """Context manager entry"""
         self.install()
@@ -604,120 +730,155 @@ class GCAllocator:
         self.uninstall()
     
     def __del__(self):
-        """Destructor - ensure cleanup"""
+        """Cleanup on deletion"""
         try:
             if self._installed:
                 self.uninstall()
         except:
             pass
+    
+    def __repr__(self):
+        return f"<GCAllocator installed={self._installed} logging={self.enable_logging}>"
 
-def get_combined_stats() -> Optional['StatsAggregator']:
-    """Get combined stats from globally installed allocator"""
+
+# Global convenience functions
+def install(enable_logging: bool = False, 
+           config: RetryConfig = None,
+           retry_config: RetryConfig = None) -> GCAllocator:
+    """Install GCAllocator globally"""
     global _global_allocator_instance
-    if _global_allocator_instance is not None:
-        if hasattr(_global_allocator_instance, 'is_installed') and _global_allocator_instance.is_installed:
-            # Direct method call on the instance
-            stats_method = getattr(_global_allocator_instance, 'get_combined_stats', None)
-            if stats_method and callable(stats_method):
-                return stats_method()
-    return None
+    
+    # Handle backward compatibility
+    if retry_config and not config:
+        config = retry_config
+    
+    with _allocator_lock:
+        if _global_allocator_instance and _global_allocator_instance.is_installed:
+            logger.warning("Replacing existing global allocator")
+            _global_allocator_instance.uninstall()
+        
+        allocator = GCAllocator(config=config, enable_logging=enable_logging)
+        allocator.install()
+        return allocator
 
-def get_allocator() -> Optional[GCAllocator]:
-    """Get the global allocator instance"""
-    return _global_allocator_instance
-
-# JO+
-#def get_manager():
-#    """Get the C++ allocator manager instance - BACKWARD COMPATIBLE"""
-#    return gc_allocator_core.get_manager()
-
-def register_checkpoint(callback: Callable[[], bool]) -> None:
-    """Register checkpoint callback - BACKWARD COMPATIBLE"""
-    if _global_allocator_instance:
-        _global_allocator_instance.register_checkpoint(callback)
-
-# Global convenience functions 
-def install(enable_logging: bool = False, retry_config: RetryConfig = None) -> GCAllocator:
-    """Install GCAllocator globally and return the instance"""
-    allocator = GCAllocator(enable_logging=enable_logging)
-    if retry_config:
-        allocator.retry_config = retry_config
-    allocator.install()
-    return allocator
 
 def uninstall():
-    """Uninstall any currently installed GCAllocator"""
+    """Uninstall global GCAllocator"""
     global _global_allocator_instance
-    if _global_allocator_instance:
-        _global_allocator_instance.uninstall()
+    
+    with _allocator_lock:
+        if _global_allocator_instance:
+            _global_allocator_instance.uninstall()
+            _global_allocator_instance = None
+
 
 def is_installed() -> bool:
-    """Check if any GCAllocator is currently installed globally"""
-    return _is_globally_installed
+    """Check if GCAllocator is installed"""
+    global _is_globally_installed, _global_allocator_instance
+    
+    if _is_globally_installed and _global_allocator_instance is not None:
+        try:
+            return _global_allocator_instance.is_installed
+        except:
+            return False
+    return False
+
+
+def get_allocator() -> Optional[GCAllocator]:
+    """Get global allocator instance"""
+    return _global_allocator_instance
+
 
 def get_stats() -> Optional[AllocationStats]:
-    """Get stats from the globally installed allocator, if any"""
-    global _global_allocator_instance
+    """Get stats from global allocator"""
     if _global_allocator_instance and _global_allocator_instance.is_installed:
         return _global_allocator_instance.get_stats()
     return None
 
+
+def get_retry_stats() -> Optional[RetryStats]:
+    """Get retry stats from global allocator"""
+    if _global_allocator_instance and _global_allocator_instance.is_installed:
+        return _global_allocator_instance.get_retry_stats()
+    return None
+
+
+def get_combined_stats() -> Optional[StatsAggregator]:
+    """Get combined stats from global allocator"""
+    if _global_allocator_instance and _global_allocator_instance.is_installed:
+        return _global_allocator_instance.get_combined_stats()
+    return None
+
+
 def reset_stats():
-    """Reset stats for the globally installed allocator, if any"""
-    global _global_allocator_instance
+    """Reset stats for global allocator"""
     if _global_allocator_instance and _global_allocator_instance.is_installed:
         _global_allocator_instance.reset_stats()
 
-def get_combined_stats() -> Optional[StatsAggregator]:
-    """Get combined stats from globally installed allocator"""
-    global _global_allocator_instance
 
-    # Defensive programming - explicit null check
-    if _global_allocator_instance is None:
-        return None
+def get_memory_info(device: Optional[int] = None) -> Optional[dict]:
+    """Get memory info from global allocator"""
+    if _global_allocator_instance and _global_allocator_instance.is_installed:
+        return _global_allocator_instance.get_memory_info(device)
+    return None
 
-    # Check installation status
-    if not getattr(_global_allocator_instance, 'is_installed', False):
-        return None
 
-    try:
-        # Get allocation stats
-        alloc_stats = _global_allocator_instance.get_stats()
+def empty_cache():
+    """Empty CUDA cache"""
+    torch.cuda.empty_cache()
+    if _global_allocator_instance:
+        logger.info("CUDA cache emptied")
 
-        # Get retry stats
-        retry_stats = _global_allocator_instance.get_retry_stats()
 
-        # Create aggregator
-        return StatsAggregator(alloc_stats, retry_stats)
+def register_checkpoint(callback: Callable[[], bool]) -> None:
+    """Register checkpoint callback"""
+    if _global_allocator_instance:
+        _global_allocator_instance.register_checkpoint(callback)
 
-    except Exception as e:
-        warnings.warn(f"Failed to get combined stats: {e}")
-        return None
-
-def get_retry_stats() -> Optional[RetryStats]:
-    """Get retry stats from globally installed allocator"""
-    global _global_allocator_instance
-
-    if _global_allocator_instance is None:
-        return None
-
-    if not getattr(_global_allocator_instance, 'is_installed', False):
-        return None
-
-    try:
-        return _global_allocator_instance.get_retry_stats()
-    except Exception as e:
-        warnings.warn(f"Failed to get retry stats: {e}")
-        return None
 
 def get_manager():
-    """Get the C++ allocator manager instance"""
+    """Get C++ allocator manager"""
     return gc_allocator_core.get_manager()
 
-# Export all public APIs
+
+# Context manager for temporary installation
+@contextmanager
+def allocator_context(config: RetryConfig = None, enable_logging: bool = False):
+    """Context manager for temporary allocator installation"""
+    allocator = GCAllocator(config=config, enable_logging=enable_logging)
+    allocator.install()
+    try:
+        yield allocator
+    finally:
+        allocator.uninstall()
+
+
+# Export public API
 __all__ = [
-    "GCAllocator", "AllocationStats", "RetryStats", "RetryConfig", "AllocationFuture",
-    "MemoryPressureLevel", "install", "uninstall", "get_stats", 
-    "is_installed", "reset_stats", "get_allocator", "get_manager",
-    "register_checkpoint"
+    # Classes
+    "GCAllocator",
+    "AllocationStats",
+    "RetryStats",
+    "StatsAggregator",
+    "RetryConfig",
+    "AllocationFuture",
+    "MemoryPressureLevel",
+    
+    # Functions
+    "install",
+    "uninstall",
+    "is_installed",
+    "get_allocator",
+    "get_stats",
+    "get_retry_stats",
+    "get_combined_stats",
+    "reset_stats",
+    "get_memory_info",
+    "empty_cache",
+    "register_checkpoint",
+    "get_manager",
+    "allocator_context",
+    
+    # Version
+    "__version__",
 ]
