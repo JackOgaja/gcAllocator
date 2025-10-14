@@ -35,7 +35,7 @@ def get_extensions():
     
     sources = [
         'gcAllocator/src/gc_allocator_core.cpp',
-        'gcAllocator/src/allocator_stats.cpp',
+        'gcAllocator/src/allocator_stats_instrument.cpp',
         'gcAllocator/src/retry_strategy.cpp',  
         'gcAllocator/src/python_bindings.cpp',
     ]
