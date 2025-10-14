@@ -47,7 +47,8 @@ struct RetryConfig {
     bool enable_gradient_checkpointing = false;
 };
 
-//
+// Statistics for retry operations
+
 struct RetryStats {
     std::atomic<size_t> total_retry_attempts{0};
     std::atomic<size_t> cache_flushes{0};
