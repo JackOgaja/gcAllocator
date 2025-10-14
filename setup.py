@@ -23,15 +23,23 @@
 import os
 import sys
 from setuptools import setup, find_packages
-from torch.utils.cpp_extension import BuildExtension, CUDAExtension
 
-# Check for CUDA availability
-import torch
-if not torch.cuda.is_available():
-    print("Warning: CUDA is not available. Building CPU-only version.")
-    
 def get_extensions():
-    """Build the C++ and CUDA extensions"""
+    """Build the C++ and CUDA extensions with lazy torch import"""
+    
+    # CRITICAL: Import torch only when building extensions
+    try:
+        import torch
+        from torch.utils.cpp_extension import BuildExtension, CUDAExtension
+    except ImportError:
+        raise ImportError(
+            "PyTorch is required to build gcAllocator. "
+            "Please install PyTorch first: pip install torch"
+        )
+    
+    # Check for CUDA availability
+    if not torch.cuda.is_available():
+        print("Warning: CUDA is not available. Building CPU-only version.")
     
     sources = [
         'gcAllocator/src/gc_allocator_core.cpp',
@@ -73,6 +81,15 @@ def get_extensions():
     
     return [ext]
 
+# Import BuildExtension lazily
+try:
+    from torch.utils.cpp_extension import BuildExtension
+    cmdclass = {'build_ext': BuildExtension}
+except ImportError:
+    # Fallback if torch not available yet
+    from setuptools.command.build_ext import build_ext
+    cmdclass = {'build_ext': build_ext}
+
 setup(
     name='gcAllocator',
     version='0.1.0',
@@ -81,9 +98,8 @@ setup(
     long_description=open('README.md').read() if os.path.exists('README.md') else '',
     long_description_content_type='text/markdown',
     packages=find_packages(),
-    package_dir={"": "."},
     ext_modules=get_extensions(),
-    cmdclass={'build_ext': BuildExtension},
+    cmdclass=cmdclass,
     install_requires=[
         'torch>=1.9.0',
     ],
@@ -96,18 +112,5 @@ setup(
             'flake8',
         ],
     },
-    package_data={"gcallocator": ["*.py"]},
-    include_package_data=True,
     python_requires='>=3.7',
-    classifiers=[
-        'Development Status :: 3 - Alpha',
-        'Intended Audience :: Developers',
-        'Topic :: Artificial Intelligence :: Scientific/Engineering',
-        'License :: OSI Approved :: MIT License',
-        'Programming Language :: Python :: 3',
-        'Programming Language :: Python :: 3.7',
-        'Programming Language :: Python :: 3.8',
-        'Programming Language :: Python :: 3.9',
-        'Programming Language :: Python :: 3.10',
-    ],
 )
