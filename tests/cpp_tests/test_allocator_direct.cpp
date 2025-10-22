@@ -1,17 +1,24 @@
-// tests/test_allocator_direct.cpp
-// FULLY CORRECTED VERSION with proper PyTorch namespaces
-
+#
 #include <iostream>
 #include <cassert>
 #include <memory>
 #include <vector>
-#include "../../gcAllocator/src/gc_allocator_core.h"
-#include "../../gcAllocator/src/allocator_stats.h"
 #include <c10/cuda/CUDACachingAllocator.h>
 #include <c10/cuda/CUDAGuard.h>
 #include <c10/core/DeviceType.h>
 #include <ATen/cuda/CUDAContext.h>  // For at::cuda functions
 #include <cuda_runtime.h>
+
+#include <torch/torch.h>                    // Full Torch API
+#include <ATen/ATen.h>                       // ATen tensor operations
+#include <ATen/cuda/CUDAContext.h>           // CUDA context
+#include <c10/cuda/CUDACachingAllocator.h>   // Caching allocator
+#include <c10/cuda/CUDAGuard.h>              // CUDA guards
+#include <c10/core/DeviceType.h>             // Device types
+#include <cuda_runtime.h>                    // CUDA runtime
+
+#include "../../gcAllocator/src/gc_allocator_core.h"
+#include "../../gcAllocator/src/allocator_stats.h"
 
 using namespace gc_allocator;
 
@@ -60,6 +67,42 @@ public:
     }
 };
 
+class CUDAAllocatorInitializer {
+public:
+    static bool ensureDeviceAllocatorReady(int device) {
+        try {
+            // Method 1: Force initialization through PyTorch's internal mechanisms
+            // This triggers lazy initialization of the device allocator
+            at::cuda::CUDAGuard device_guard(device);
+
+            // Force the caching allocator to initialize for this specific device
+            // This is the critical missing step
+            c10::cuda::CUDACachingAllocator::init(device);
+
+            // Verify by attempting a small allocation through PyTorch
+            // This ensures all internal structures are ready
+            auto options = at::TensorOptions().dtype(at::kFloat).device(at::kCUDA, device);
+            at::empty({1}, options);
+            //std::empty({1}, options);
+
+            return true;
+        } catch (const std::exception& e) {
+            std::cerr << "Failed to initialize device " << device << ": " << e.what() << "\n";
+            return false;
+        }
+    }
+
+    static c10::Allocator* getInitializedAllocator(int device = 0) {
+        // Ensure device is initialized FIRST
+        if (!ensureDeviceAllocatorReady(device)) {
+            return nullptr;
+        }
+
+        // Now get the allocator - it should be ready
+        return c10::cuda::CUDACachingAllocator::get();
+    }
+};
+
 class AllocatorDirectTest {
 public:
     static void runAllTests() {
@@ -68,7 +111,7 @@ public:
         std::cout << "========================================\n\n";
         
         // Initialize CUDA once at the beginning
-        if (at::cuda::is_available()) {  // CORRECTED: at::cuda
+        if (at::cuda::is_available()) {  // at::cuda
             std::cout << "Initializing CUDA context...\n";
             if (CUDAInitializer::initializeCUDA()) {
                 std::cout << "✓ CUDA initialized successfully\n\n";
@@ -119,7 +162,7 @@ private:
         cuda_allocator = c10::cuda::CUDACachingAllocator::get();
         std::cout << "CUDACachingAllocator::get() returned: " << cuda_allocator << "\n";
         
-        if (cuda_allocator == nullptr && at::cuda::is_available()) {  // CORRECTED
+        if (cuda_allocator == nullptr && at::cuda::is_available()) { 
             std::cout << "Attempting alternative initialization methods...\n";
             
             CUDAInitializer::ensureCUDAContext();
@@ -146,64 +189,67 @@ private:
     static void testDirectAllocation() {
         std::cout << "TEST 3: Direct Allocation Call\n";
         std::cout << "-------------------------------\n";
-        
-        if (!at::cuda::is_available()) {  // CORRECTED
+    
+        if (!at::cuda::is_available()) {
             std::cout << "⚠ CUDA not available, skipping test\n\n";
             return;
         }
-        
-        CUDAInitializer::ensureCUDAContext();
-        
+    
+        //Get current device and ensure it's initialized
+        int device = at::cuda::current_device();
+        std::cout << "Current CUDA device: " << device << "\n";
+    
+        // Create allocator
         auto allocator = std::make_unique<GCAllocator>();
-        
-        c10::cuda::CUDACachingAllocator::init(0);
-        auto* cuda_allocator = c10::cuda::CUDACachingAllocator::get();
-        
+    
+        // Get properly initialized allocator for the device
+        auto* cuda_allocator = CUDAAllocatorInitializer::getInitializedAllocator(device);
+    
         if (!cuda_allocator) {
-            std::cout << "✗ ERROR: Cannot get CUDA allocator\n";
-            std::cout << "  This confirms the ROOT CAUSE!\n\n";
+            std::cout << "✗ ERROR: Cannot initialize CUDA allocator for device " << device << "\n";
             return;
         }
-        
+    
         std::cout << "Setting wrapped allocator to: " << cuda_allocator << "\n";
         allocator->setWrappedAllocator(cuda_allocator);
         allocator->setLoggingEnabled(true);
-        
+    
+        // Rest of the test remains the same...
         auto initial_stats = allocator->getStats();
         std::cout << "Initial allocations: " << initial_stats.getTotalAllocations() << "\n";
         std::cout << "Initial requests: " << initial_stats.getTotalRequests() << "\n";
-        
+    
         size_t alloc_size = 1024 * 1024;  // 1 MB
         std::cout << "\nAttempting to allocate " << alloc_size << " bytes...\n";
-        
+    
         try {
-            c10::cuda::set_device(0);
-            
+            // Set the device context before allocation
+            c10::cuda::CUDAGuard guard(device);
+        
             c10::DataPtr result = allocator->allocate(alloc_size);
-            
+        
             if (result.get() != nullptr) {
                 std::cout << "✓ Allocation successful! Pointer: " << result.get() << "\n";
-                
+            
                 auto after_stats = allocator->getStats();
                 std::cout << "After allocations: " << after_stats.getTotalAllocations() << "\n";
                 std::cout << "After requests: " << after_stats.getTotalRequests() << "\n";
-                
+            
                 if (after_stats.getTotalRequests() > initial_stats.getTotalRequests()) {
                     std::cout << "✓ Statistics were updated correctly\n";
                 } else {
                     std::cout << "✗ ERROR: Statistics not updated!\n";
                 }
-                
             } else {
                 std::cout << "✗ Allocation returned null pointer\n";
             }
         } catch (const std::exception& e) {
             std::cout << "✗ Allocation threw exception: " << e.what() << "\n";
         }
-        
+    
         std::cout << "\n";
     }
-    
+
     static void testNullWrappedAllocator() {
         std::cout << "TEST 4: Null Wrapped Allocator Behavior\n";
         std::cout << "----------------------------------------\n";
@@ -231,7 +277,7 @@ private:
         std::cout << "TEST 5: Statistics Update Verification\n";
         std::cout << "---------------------------------------\n";
         
-        if (!at::cuda::is_available()) {  // CORRECTED
+        if (!at::cuda::is_available()) { 
             std::cout << "⚠ CUDA not available, skipping test\n\n";
             return;
         }
@@ -270,7 +316,7 @@ private:
         std::cout << "TEST 6: Allocation with Retry Logic\n";
         std::cout << "------------------------------------\n";
         
-        if (!at::cuda::is_available()) {  // CORRECTED
+        if (!at::cuda::is_available()) { 
             std::cout << "⚠ CUDA not available, skipping test\n\n";
             return;
         }
@@ -307,7 +353,7 @@ private:
         std::cout << "TEST 7: Deallocation Tracking\n";
         std::cout << "------------------------------\n";
         
-        if (!at::cuda::is_available()) {  // CORRECTED
+        if (!at::cuda::is_available()) { 
             std::cout << "⚠ CUDA not available, skipping test\n\n";
             return;
         }
@@ -340,9 +386,9 @@ int main() {
     std::cout << "GCAllocator Direct Unit Tests\n";
     std::cout << "==============================\n";
     
-    if (at::cuda::is_available()) {  // CORRECTED
+    if (at::cuda::is_available()) { 
         std::cout << "CUDA is available\n";
-        std::cout << "CUDA device count: " << at::cuda::device_count() << "\n";  // CORRECTED
+        std::cout << "CUDA device count: " << at::cuda::device_count() << "\n";  
     } else {
         std::cout << "CUDA is not available\n";
     }

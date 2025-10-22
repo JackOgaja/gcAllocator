@@ -28,6 +28,7 @@
 #include <c10/cuda/CUDAException.h>
 #include <c10/core/DeviceType.h>
 #include <c10/core/impl/alloc_cpu.h>
+#include <ATen/ATen.h>
 #include <ATen/Context.h>
 #include <ATen/cuda/CUDAContext.h>
 #include <iostream>
@@ -355,16 +356,48 @@ void GCAllocatorManager::installAllocator() {
         if (at::cuda::is_available()) {
             at::globalContext().lazyInitDevice(c10::DeviceType::CUDA);
             c10::cuda::CUDAGuard guard(0);
+        } else {
+            throw std::runtime_error("CUDA is not available");
         }
 
-        // CRITICAL: Capture original allocator BEFORE installing proxy
-        original_cuda_allocator_ = c10::GetAllocator(c10::DeviceType::CUDA);
-
+        // Initialize allocator for current device
+        int device = at::cuda::current_device();
+        
+        // Force device allocator initialization
+        {
+            at::cuda::CUDAGuard guard(device);
+            
+            // Initialize the caching allocator for this device
+            c10::cuda::CUDACachingAllocator::init(device);
+            
+            // Force initialization by creating a small tensor
+            auto options = at::TensorOptions().dtype(at::kFloat).device(at::kCUDA, device);
+            at::empty({1}, options);
+        }
+        
+        // NOW get the allocator - it should be properly initialized
+        original_cuda_allocator_ = c10::cuda::CUDACachingAllocator::get();
+        
+        if (!original_cuda_allocator_) {
+            throw std::runtime_error("Failed to get CUDA allocator after initialization");
+        }
+        
         // Create proxy allocator
         allocator_ = std::make_unique<GCAllocator>();
-
-        // PROXY PATTERN: Set the wrapped allocator
+        
+        // Set the wrapped allocator
         allocator_->setWrappedAllocator(original_cuda_allocator_);
+
+        // JO++++++
+
+        // Capture original allocator BEFORE installing proxy
+        // JO original_cuda_allocator_ = c10::GetAllocator(c10::DeviceType::CUDA);
+
+        // Create proxy allocator
+        // JO allocator_ = std::make_unique<GCAllocator>();
+
+        // Set the wrapped allocator
+        // JO allocator_->setWrappedAllocator(original_cuda_allocator_);
 
         // Configure retry strategy
         RetryConfig default_config;
